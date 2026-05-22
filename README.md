@@ -10,52 +10,36 @@ real deployment.
 
 ## App Flow
 
-```mermaid
-flowchart TB
-    user([User Request])
+```text
+User Request
+    |
+    v
++-------------------------+
+| Cloud Agent Service     |
++-------------------------+
+| 1. API intake           |
+| 2. Validate request     |
+| 3. Upgrade prompt       |
+| 4. Create job record    |
+| 5. Queue job            |
+| 6. Dispatch worker      |
+| 7. Copy workspace       |
+| 8. Apply agent edit     |
+| 9. Run tests + gates    |
+| 10. Mock PR + deploy    |
++-------------------------+
+    |
+    v
+Final Job Result
 
-    subgraph service["Cloud Agent Service"]
-        direction TB
-        intake["1. API Intake"]
-        validate{"2. Valid?"}
-        prompt["3. Prompt Upgrade"]
-        job["4. Job Record"]
-        queue["5. Queue"]
-        dispatch["6. Dispatch Worker"]
-        workspace["7. Workspace Copy"]
-        edit["8. Agent Edit"]
-        verify{"9. Tests + Gates"}
-        sync["10. Mock PR + Deploy"]
-        done([Final Result])
-    end
+Failure exits:
+  - Invalid request  -> fail before dispatch
+  - Test/gate failure -> no PR, no deploy
 
-    subgraph observe["Monitoring"]
-        direction TB
-        events[(SQLite Events)]
-        logs[Docker Logs]
-        status["Job Status API"]
-    end
-
-    user --> intake
-    intake --> validate
-    validate -- reject --> fail([Fail Fast])
-    validate -- accept --> prompt
-    prompt --> job
-    job --> queue
-    queue --> dispatch
-    dispatch --> workspace
-    workspace --> edit
-    edit --> verify
-    verify -- fail --> blocked([No Sync or Deploy])
-    verify -- pass --> sync
-    sync --> done
-
-    intake -.-> events
-    dispatch -.-> events
-    verify -.-> events
-    sync -.-> events
-    dispatch -.-> logs
-    events -.-> status
+Monitoring:
+  - SQLite job events
+  - Docker logs
+  - GET /jobs/{job_id}
 ```
 
 ## Components
