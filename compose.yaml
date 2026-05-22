@@ -1,0 +1,33 @@
+services:
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile.api
+    ports:
+      - "8000:8000"
+    environment:
+      AGENT_CLOUD_RUNTIME: /runtime
+      AGENT_CLOUD_DB: /runtime/jobs.sqlite3
+      AGENT_CLOUD_WORKSPACES: /runtime/workspaces
+      AGENT_CLOUD_ARTIFACTS: /runtime/artifacts
+    volumes:
+      - runtime_data:/runtime
+      - .:/host_repo:ro
+
+  agent:
+    profiles:
+      - agent
+    build:
+      context: .
+      dockerfile: Dockerfile.agent
+    environment:
+      AGENT_CLOUD_RUNTIME: /runtime
+      AGENT_CLOUD_DB: /runtime/jobs.sqlite3
+      AGENT_CLOUD_WORKSPACES: /runtime/workspaces
+      AGENT_CLOUD_ARTIFACTS: /runtime/artifacts
+    volumes:
+      - runtime_data:/runtime
+      - .:/host_repo:ro
+
+volumes:
+  runtime_data:

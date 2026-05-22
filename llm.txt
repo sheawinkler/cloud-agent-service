@@ -1,0 +1,54 @@
+Cloud Agent Service Local MVP
+=============================
+
+Purpose:
+This directory implements a local-only skeleton for a cloud coding-agent
+application. It accepts a user request, validates it, upgrades the prompt,
+creates a job, runs a local agent workflow, tests changes, applies policy gates,
+records a mock GitHub PR, and records a mock deployment.
+
+Important boundary:
+The current implementation does not push to GitHub, does not call AWS, and does
+not perform a real deployment. Local PR and deployment outputs are artifacts used
+to prove the control flow.
+
+Primary files:
+- app.py: FastAPI API.
+- pipeline.py: end-to-end application flow.
+- store.py: SQLite job and event storage.
+- orchestrator.py: local queue and runner.
+- worker.py: one-job container entry point.
+- compose.yaml: Docker Compose for local API/worker builds.
+- scripts/install_allowed_modules.sh: dependency allowlist installer.
+- tests/test_cloud_agent_service_flow.py: deterministic flow tests.
+
+Run commands:
+- python3 -m compileall . tests/test_cloud_agent_service_flow.py
+- python3 -m unittest tests.test_cloud_agent_service_flow
+- python3 -m unittest discover -s tests
+- docker --context orbstack compose -f compose.yaml up -d --build api
+- curl -sS http://127.0.0.1:8000/health
+
+Monitor commands:
+- docker --context orbstack compose -f compose.yaml ps
+- docker --context orbstack compose -f compose.yaml logs --tail=120 api
+- curl -sS http://127.0.0.1:8000/jobs/<job_id>
+
+Expected successful flow:
+1. Receive prompt.
+2. Validate prompt, repo path, budgets, and runtime limits.
+3. Upgrade prompt into a concise implementation brief.
+4. Create job record and queue event.
+5. Dispatch local worker/container contract.
+6. Copy repo into an isolated workspace.
+7. Execute deterministic local coding action.
+8. Run compile/test checks.
+9. Apply policy gates.
+10. Record mock PR/deployment and return final status.
+
+Do not:
+- Treat mock PR URLs as real GitHub PRs.
+- Treat local deployment artifacts as production deploys.
+- Commit runtime SQLite databases, generated workspaces, or artifacts.
+- Add package dependencies without updating the allowlist and tests.
+- Log or persist secrets.

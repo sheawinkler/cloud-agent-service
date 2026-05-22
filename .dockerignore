@@ -1,0 +1,7 @@
+.git
+.venv
+.quality-venv
+__pycache__
+*.pyc
+.runtime
+runtime

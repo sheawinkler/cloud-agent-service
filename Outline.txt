@@ -1,0 +1,340 @@
+Cloud Agent Service Application Outline
+==================================
+
+Objective
+---------
+Build a cloud-hosted application that receives user development requests,
+dispatches isolated coding agents, lets them edit repositories, runs tests, and
+redeploys only after deterministic validation passes.
+
+Target Experience
+-----------------
+Users should be able to submit requests such as:
+
+- "Build me a website."
+- "Develop these features."
+- "For my shopping website, create a buy button."
+
+The system should turn broad requests into scoped implementation work, run that
+work in the cloud, verify the changes, and return a PR/deployment result instead
+of depending on the user's local machine.
+
+Core Assumptions
+----------------
+- Cloud provider: AWS.
+- Agent runtime: ECS task per agent job, preferably on Fargate.
+- AI provider: OpenAI API.
+- Repository access: GitHub connector/plugin for clone, branch, PR, issue, and
+  sync operations.
+- Scale target: 0..N users and 0..N concurrent agent jobs.
+- Each user has configurable token, runtime, spend, and concurrency budgets.
+- Agents run in isolated containers with no access to other users' code,
+  credentials, files, or build artifacts.
+- Runtime starts from a minimal Python environment with a controlled allowlist of
+  modules and tools.
+
+Primary Flow
+------------
+1. User submits a request.
+   Example: "For my shopping website, create a buy button."
+
+2. API validates the request.
+   - Reject oversized input.
+   - Reject unsupported repository/provider combinations.
+   - Require repo, branch, target environment, and deployment policy when code
+     changes or deployment are requested.
+   - Classify risk level: docs-only, code edit, dependency change, deployment,
+     data migration, or infrastructure change.
+
+3. Prompt upgrade stage normalizes the request.
+   - Rewrite vague input into a concise implementation brief.
+   - Preserve user intent, constraints, and acceptance criteria.
+   - Extract expected deliverables:
+     - target behavior
+     - likely files or areas
+     - tests to run
+     - deploy target
+     - rollback expectation
+   - Surface ambiguities before dispatch when the request is too vague.
+
+4. Planner creates an agent job.
+   - Select repository and base branch.
+   - Set token budget, wall-clock timeout, max file changes, max diff size, and
+     dependency policy.
+   - Select allowed tools and Python modules.
+   - Create an audit record for the job.
+
+5. Orchestrator dispatches an ECS task.
+   - One container per job.
+   - Container receives short-lived credentials through AWS Secrets Manager or
+     task role injection.
+   - Container clones the target repo into an ephemeral workspace.
+   - Container installs only approved dependencies into a per-job virtual
+     environment.
+
+6. Coding agent executes.
+   - Inspects repo conventions before editing.
+   - Produces a plan with intended files and verification steps.
+   - Makes edits on a new branch.
+   - Runs formatters, linters, tests, and build commands.
+   - Captures logs and structured status events.
+
+7. Policy gates review the result.
+   - No deploy if tests fail.
+   - No deploy if unexpected files changed.
+   - No deploy if secrets are detected in diff/logs.
+   - No deploy if dependency changes are outside policy.
+   - Require human approval for high-risk changes.
+
+8. GitHub sync happens after validation.
+   - Push branch.
+   - Open or update PR.
+   - Attach test results, summary, changed files, and deployment readiness.
+   - Optionally request review from a human or another automated reviewer.
+
+9. Deployment runs only after gates pass.
+   - Low-risk path: merge after checks and deploy.
+   - Approval path: wait for human approval, then deploy.
+   - Prefer the repo's existing CI/CD path when available.
+   - Store rollback command or previous deploy reference with the job.
+
+10. User receives final response.
+    - Summary of changes.
+    - PR/deployment links.
+    - Tests run and exact result.
+    - Skipped checks or unresolved risks.
+
+High-Level AWS Components
+-------------------------
+- API Gateway or ALB:
+  Public HTTPS entry point for user requests.
+
+- Application API:
+  Handles authentication, request validation, prompt normalization, job creation,
+  status reads, billing counters, and user-facing responses.
+
+- Job Queue:
+  SQS queue for pending agent jobs. Add priority queues later if paid tiers or
+  urgent jobs matter.
+
+- Orchestrator Service:
+  Pulls jobs from the queue, enforces quotas, starts ECS tasks, tracks task
+  state, and records progress.
+
+- ECS/Fargate:
+  Runs isolated agent containers. Prefer one task per job with CPU, memory, disk,
+  and timeout limits.
+
+- ECR:
+  Stores versioned agent runtime images.
+
+- Secrets Manager:
+  Stores OpenAI keys, GitHub app credentials, deployment tokens, and other
+  short-lived secrets. Agents should receive scoped credentials only.
+
+- DynamoDB or Postgres:
+  Stores users, jobs, budgets, state transitions, audit metadata, repo bindings,
+  and deployment records.
+
+- S3:
+  Stores logs, test artifacts, build artifacts, screenshots, and agent traces.
+
+- CloudWatch:
+  Tracks metrics, logs, alarms, task failures, queue depth, latency, and cost
+  signals.
+
+Agent Runtime Contract
+----------------------
+Each ECS task should receive a structured job payload:
+
+- job_id
+- user_id
+- repo provider and repo id
+- base branch
+- working branch name
+- normalized prompt
+- acceptance criteria
+- allowed commands
+- allowed Python modules
+- token budget
+- wall-clock timeout
+- max diff size
+- deployment policy
+- callback/status endpoint
+
+Each agent should emit structured events:
+
+- job_started
+- repo_cloned
+- plan_created
+- files_changed
+- dependencies_requested
+- tests_started
+- tests_finished
+- policy_gate_result
+- branch_pushed
+- pr_created_or_updated
+- deployment_started
+- deployment_finished
+- job_failed
+- job_succeeded
+
+Prompt Upgrade Stage
+--------------------
+Input:
+- Raw user request.
+- Repo metadata.
+- Relevant files or project summary.
+- User budget and deployment policy.
+
+Output:
+- Concise implementation brief.
+- Acceptance criteria.
+- Non-goals.
+- Risk classification.
+- Suggested test commands.
+- Ambiguities that require user confirmation.
+
+Example upgraded prompt:
+"In the shopping website repo, add a visible Buy button to the product detail
+page. Follow existing styling, preserve current cart behavior, add or update
+tests for the button render/click path, and open a PR. Do not deploy unless all
+tests pass."
+
+Agent Rules and Response Format
+-------------------------------
+The planner should produce a machine-readable instruction bundle before the
+agent starts:
+
+- normalized_prompt
+- acceptance_criteria
+- allowed_python_modules
+- allowed_shell_commands
+- disallowed_actions
+- expected_files_or_areas
+- required_tests
+- max_tokens
+- max_runtime_seconds
+- output_schema
+
+The agent's final response should include:
+
+- changed_files with line references where possible
+- commands_run
+- tests_passed
+- tests_failed
+- dependency_changes
+- policy_gate_results
+- pr_url
+- deployment_status
+- residual_risks
+
+Dependency and Module Policy
+----------------------------
+Start with a minimal Python image and an allowlist.
+
+Default allowed Python modules/packages:
+- standard library
+- requests or httpx
+- pydantic
+- pytest
+- ruff
+- mypy, optional
+- GitPython, optional
+- openai
+
+Dependency rules:
+- Agent must request new dependencies before installing them.
+- Dependency requests include package name, version range, reason, and risk.
+- Install into a per-job virtual environment through a shell script.
+- Cache base layers in the Docker image; keep job-specific installs ephemeral.
+- Block packages with known security or licensing issues.
+
+Security Boundaries
+-------------------
+- No long-lived credentials inside agent containers.
+- Use GitHub App installation tokens scoped to one repo when possible.
+- Use AWS task roles with least privilege.
+- Prevent cross-job filesystem reuse.
+- Redact secrets from logs.
+- Scan diffs and logs before persisting or showing them.
+- Set network egress policy; consider denying arbitrary outbound traffic except
+  approved APIs and package registries.
+- Run untrusted code in isolated containers with CPU, memory, disk, and timeout
+  limits.
+
+Budget and Quota Controls
+-------------------------
+- Per-user token budget.
+- Per-user concurrent job limit.
+- Per-org monthly spend cap.
+- Per-job wall-clock timeout.
+- Per-job maximum retry count.
+- Per-job maximum changed files and diff size.
+- Queue admission control when capacity or spend limits are reached.
+
+Failure Cases
+-------------
+- Prompt too large: reject with size limit and ask for narrower request.
+- Ambiguous request: ask targeted clarification before starting an agent.
+- Repo unavailable: fail before dispatching ECS task.
+- Dependency denied: stop and explain blocked package.
+- Tests fail: push PR only if useful, mark not deployable.
+- Build fails: capture logs and mark not deployable.
+- Deployment fails: stop, attach rollback instructions or trigger rollback if
+  configured.
+- Agent exceeds budget: stop task, save partial summary, do not deploy.
+
+Testing and Deployment Gates
+----------------------------
+Minimum gates:
+- repo-specific tests pass
+- formatter/linter pass when configured
+- build succeeds
+- secret scan passes
+- diff policy passes
+- dependency policy passes
+- deployment policy passes
+
+Deployment modes:
+- manual approval only
+- auto-deploy low-risk changes after PR merge
+- staging first, production after approval
+- never deploy, PR only
+
+Data Model Sketch
+-----------------
+- users
+- repos
+- repo_integrations
+- jobs
+- job_events
+- job_artifacts
+- agent_runs
+- budgets
+- policy_results
+- deployments
+
+Minimal MVP Scope
+-----------------
+1. Authenticated API endpoint accepts a prompt and repo reference.
+2. Prompt validator rejects oversized input.
+3. Prompt normalizer creates a short implementation brief.
+4. Job record is written.
+5. SQS message is queued.
+6. Orchestrator starts one ECS task.
+7. Agent clones repo, creates branch, makes a small edit, runs tests.
+8. Agent pushes branch and opens PR.
+9. API exposes job status and final result.
+10. Deployment remains manual until validation and audit flow are reliable.
+
+Open Design Questions
+---------------------
+- Should agents be allowed to deploy directly, or only trigger existing CI/CD?
+- Which changes require human approval?
+- What is the first supported repo type: static site, FastAPI, Next.js, or
+  generic Python?
+- How much repo context should be sent to the model versus retrieved on demand?
+- Should multiple agents collaborate on one job, or should MVP use one agent per
+  request?
+- What is the exact rollback contract for each deploy target?

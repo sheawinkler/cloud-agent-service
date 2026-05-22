@@ -1,0 +1,153 @@
+from __future__ import annotations
+
+import json
+import sqlite3
+from contextlib import closing
+from datetime import UTC, datetime
+from pathlib import Path
+from typing import Any
+
+from cloud_agent_service.models import JobStatus
+
+
+def utc_now() -> str:
+    return datetime.now(UTC).isoformat()
+
+
+class JobStore:
+    def __init__(self, db_path: str | Path) -> None:
+        self.db_path = Path(db_path)
+        self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        self._init_schema()
+
+    def _connect(self) -> sqlite3.Connection:
+        conn = sqlite3.connect(self.db_path)
+        conn.row_factory = sqlite3.Row
+        return conn
+
+    def _init_schema(self) -> None:
+        with closing(self._connect()) as conn:
+            with conn:
+                conn.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS jobs (
+                        job_id TEXT PRIMARY KEY,
+                        user_id TEXT NOT NULL,
+                        prompt TEXT NOT NULL,
+                        normalized_prompt TEXT NOT NULL DEFAULT '',
+                        repo_path TEXT NOT NULL,
+                        workspace_path TEXT NOT NULL DEFAULT '',
+                        base_branch TEXT NOT NULL,
+                        deploy_policy TEXT NOT NULL,
+                        token_budget INTEGER NOT NULL,
+                        status TEXT NOT NULL,
+                        result_json TEXT NOT NULL DEFAULT '{}',
+                        created_at TEXT NOT NULL,
+                        updated_at TEXT NOT NULL
+                    )
+                    """
+                )
+                conn.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS job_events (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        job_id TEXT NOT NULL,
+                        event_type TEXT NOT NULL,
+                        payload_json TEXT NOT NULL,
+                        created_at TEXT NOT NULL,
+                        FOREIGN KEY(job_id) REFERENCES jobs(job_id)
+                    )
+                    """
+                )
+
+    def create_job(self, job: dict[str, Any]) -> None:
+        now = utc_now()
+        with closing(self._connect()) as conn:
+            with conn:
+                conn.execute(
+                    """
+                    INSERT INTO jobs (
+                        job_id, user_id, prompt, repo_path, base_branch,
+                        deploy_policy, token_budget, status, created_at, updated_at
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        job["job_id"],
+                        job["user_id"],
+                        job["prompt"],
+                        job["repo_path"],
+                        job["base_branch"],
+                        job["deploy_policy"],
+                        job["token_budget"],
+                        JobStatus.CREATED.value,
+                        now,
+                        now,
+                    ),
+                )
+
+    def update_job(self, job_id: str, **fields: Any) -> None:
+        if not fields:
+            return
+        fields["updated_at"] = utc_now()
+        assignments = ", ".join(f"{key} = ?" for key in fields)
+        values = [self._encode(value) for value in fields.values()]
+        values.append(job_id)
+        with closing(self._connect()) as conn:
+            with conn:
+                conn.execute(f"UPDATE jobs SET {assignments} WHERE job_id = ?", values)
+
+    def add_event(
+        self,
+        job_id: str,
+        event_type: str,
+        payload: dict[str, Any] | None = None,
+    ) -> None:
+        with closing(self._connect()) as conn:
+            with conn:
+                conn.execute(
+                    """
+                    INSERT INTO job_events (job_id, event_type, payload_json, created_at)
+                    VALUES (?, ?, ?, ?)
+                    """,
+                    (job_id, event_type, json.dumps(payload or {}, sort_keys=True), utc_now()),
+                )
+
+    def get_job(self, job_id: str) -> dict[str, Any] | None:
+        with closing(self._connect()) as conn:
+            row = conn.execute("SELECT * FROM jobs WHERE job_id = ?", (job_id,)).fetchone()
+        return self._row_to_dict(row) if row else None
+
+    def list_events(self, job_id: str) -> list[dict[str, Any]]:
+        with closing(self._connect()) as conn:
+            rows = conn.execute(
+                """
+                SELECT event_type, payload_json, created_at
+                FROM job_events
+                WHERE job_id = ?
+                ORDER BY id
+                """,
+                (job_id,),
+            ).fetchall()
+        return [
+            {
+                "event_type": row["event_type"],
+                "payload": json.loads(row["payload_json"]),
+                "created_at": row["created_at"],
+            }
+            for row in rows
+        ]
+
+    @staticmethod
+    def _encode(value: Any) -> Any:
+        if isinstance(value, (dict, list)):
+            return json.dumps(value, sort_keys=True)
+        if isinstance(value, JobStatus):
+            return value.value
+        return value
+
+    @staticmethod
+    def _row_to_dict(row: sqlite3.Row) -> dict[str, Any]:
+        data = dict(row)
+        data["result_json"] = json.loads(data["result_json"])
+        return data
