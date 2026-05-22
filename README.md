@@ -11,37 +11,51 @@ real deployment.
 ## App Flow
 
 ```mermaid
-flowchart LR
-    user[User Request] --> api[FastAPI Intake]
-    api --> validate{Validate}
-    validate -- too large / invalid --> reject[Fail Fast]
-    validate -- ok --> upgrade[Prompt Upgrade]
-    upgrade --> plan[Plan + Runtime Contract]
-    plan --> queue[Local Queue]
-    queue --> dispatch[Orchestrator Dispatch]
-    dispatch --> container[Agent Container Contract]
-    container --> clone[Ephemeral Workspace Copy]
-    clone --> edit[Agent Edit]
-    edit --> tests[Compile + Tests]
-    tests --> gates{Policy Gates}
-    gates -- fail --> blocked[No Sync / No Deploy]
-    gates -- pass --> sync[Mock GitHub Sync]
-    sync --> deploy[Mock Deployment]
-    deploy --> result[Final Job Result]
+flowchart TB
+    user([User Request])
 
-    subgraph Monitor
-        events[(SQLite Job Events)]
-        logs[Docker Logs]
-        status["GET /jobs/{job_id}"]
+    subgraph service["Cloud Agent Service"]
+        direction TB
+        intake["1. API Intake"]
+        validate{"2. Valid?"}
+        prompt["3. Prompt Upgrade"]
+        job["4. Job Record"]
+        queue["5. Queue"]
+        dispatch["6. Dispatch Worker"]
+        workspace["7. Workspace Copy"]
+        edit["8. Agent Edit"]
+        verify{"9. Tests + Gates"}
+        sync["10. Mock PR + Deploy"]
+        done([Final Result])
     end
 
-    api --> events
-    dispatch --> events
-    tests --> events
-    gates --> events
-    deploy --> events
-    container --> logs
-    events --> status
+    subgraph observe["Monitoring"]
+        direction TB
+        events[(SQLite Events)]
+        logs[Docker Logs]
+        status["Job Status API"]
+    end
+
+    user --> intake
+    intake --> validate
+    validate -- reject --> fail([Fail Fast])
+    validate -- accept --> prompt
+    prompt --> job
+    job --> queue
+    queue --> dispatch
+    dispatch --> workspace
+    workspace --> edit
+    edit --> verify
+    verify -- fail --> blocked([No Sync or Deploy])
+    verify -- pass --> sync
+    sync --> done
+
+    intake -.-> events
+    dispatch -.-> events
+    verify -.-> events
+    sync -.-> events
+    dispatch -.-> logs
+    events -.-> status
 ```
 
 ## Components
