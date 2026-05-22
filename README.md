@@ -32,7 +32,7 @@ flowchart LR
     subgraph Monitor
         events[(SQLite Job Events)]
         logs[Docker Logs]
-        status[GET /jobs/{job_id}]
+        status["GET /jobs/{job_id}"]
     end
 
     api --> events
