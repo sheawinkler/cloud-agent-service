@@ -55,6 +55,9 @@ Monitoring:
 - `Dockerfile.agent`: worker container.
 - `compose.yaml`: local API/worker build configuration.
 - `AGENTS.md`: operating instructions for coding agents.
+- `EVALUATION.md`: criteria for judging product and operational readiness.
+- `examples/agent_contract.json`: example worker payload and final result shape.
+- `scripts/demo_local_flow.py`: no-cloud, no-Docker proof path.
 - `llm.txt`: compact orientation file for LLM agents.
 
 ## What The MVP Proves
@@ -71,12 +74,29 @@ Monitoring:
 10. Return final status with events, changed files, checks, mock PR URL, and
     mock deployment status.
 
+## Simple Demo
+
+Run a complete local job without Docker or external services:
+
+```bash
+python3 scripts/demo_local_flow.py
+```
+
+The demo creates a temporary shopping-site repo, submits the buy-button request,
+runs the full service pipeline, and prints the final JSON result. Look for:
+
+- `"status": "succeeded"`
+- `"changed_files": ["index.html"]`
+- `"tests_failed": []`
+- `"job_succeeded"` in the event list
+
 ## Local Run
 
 Compile and test:
 
 ```bash
-python3 -m compileall . tests/test_cloud_agent_service_flow.py
+python3 -m compileall cloud_agent_service scripts tests
+python3 scripts/demo_local_flow.py
 python3 -m unittest tests.test_cloud_agent_service_flow
 python3 -m unittest discover -s tests
 ```
@@ -154,6 +174,12 @@ A job must pass all gates before mock PR sync and mock deployment:
 - deployment policy passes
 
 If a gate fails, the job stops and reports `failed`.
+
+## Evaluation And Contracts
+
+- `EVALUATION.md`: how to judge the service as an agent control loop.
+- `examples/agent_contract.json`: example worker payload and final result shape.
+- `scripts/demo_local_flow.py`: no-cloud, no-Docker proof path for the happy flow.
 
 ## Tooling Research Notes
 

@@ -1,0 +1,70 @@
+{
+  "job_payload": {
+    "job_id": "demo-job-001",
+    "user_id": "local-user",
+    "repo_provider": "local",
+    "repo_path": "/host_repo",
+    "base_branch": "main",
+    "working_branch": "agent/demo-job-001",
+    "normalized_prompt": "For my shopping website, create a buy button.",
+    "acceptance_criteria": [
+      "Inspect the repository before editing.",
+      "Make the smallest change that satisfies the request.",
+      "Run deterministic checks before sync or deploy.",
+      "A visible Buy button exists on the relevant web page."
+    ],
+    "allowed_python_modules": [
+      "standard-library",
+      "requests",
+      "httpx",
+      "pydantic",
+      "pytest",
+      "ruff",
+      "mypy",
+      "GitPython",
+      "openai"
+    ],
+    "allowed_shell_commands": [
+      "git",
+      "python3",
+      "pip",
+      "pytest",
+      "ruff",
+      "mypy",
+      "npm",
+      "pnpm",
+      "yarn"
+    ],
+    "token_budget": 8000,
+    "max_runtime_seconds": 600,
+    "max_changed_files": 12,
+    "deployment_policy": "manual",
+    "status_callback_url": "http://api/jobs/demo-job-001"
+  },
+  "final_result": {
+    "job_id": "demo-job-001",
+    "status": "succeeded",
+    "changed_files": [
+      "index.html"
+    ],
+    "commands_run": [
+      "python3 -m compileall ."
+    ],
+    "tests_passed": [
+      "python3 -m compileall ."
+    ],
+    "tests_failed": [],
+    "dependency_changes": [],
+    "policy_gate_results": {
+      "repo_tests": true,
+      "secret_scan": true,
+      "diff_policy": true,
+      "dependency_policy": true,
+      "deployment_policy": true
+    },
+    "pr_url": "local://github/pr/demo-job-001",
+    "deployment_status": "ready: manual approval required",
+    "residual_risks": []
+  }
+}
+

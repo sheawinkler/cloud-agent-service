@@ -19,11 +19,15 @@ Primary files:
 - orchestrator.py: local queue and runner.
 - worker.py: one-job container entry point.
 - compose.yaml: Docker Compose for local API/worker builds.
+- EVALUATION.md: product and operational evaluation criteria.
+- examples/agent_contract.json: worker payload and final result example.
+- scripts/demo_local_flow.py: no-cloud happy path demo.
 - scripts/install_allowed_modules.sh: dependency allowlist installer.
 - tests/test_cloud_agent_service_flow.py: deterministic flow tests.
 
 Run commands:
-- python3 -m compileall . tests/test_cloud_agent_service_flow.py
+- python3 -m compileall cloud_agent_service scripts tests
+- python3 scripts/demo_local_flow.py
 - python3 -m unittest tests.test_cloud_agent_service_flow
 - python3 -m unittest discover -s tests
 - docker --context orbstack compose -f compose.yaml up -d --build api
