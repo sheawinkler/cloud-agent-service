@@ -95,6 +95,12 @@ If a gate fails, the job must stop before mock PR sync or mock deployment.
 
 ## Development Rules
 
+- Hold Python changes to PEP 8 standards. Use the repo Ruff config for import
+  ordering, formatting, and lint checks before claiming quality.
+- Engineer for performance-oriented solutions: keep hot paths simple, avoid
+  avoidable disk scans and repeated subprocess work, preserve bounded runtime
+  and memory behavior, and choose streaming or incremental processing when job
+  artifacts can grow.
 - Prefer standard-library changes in `pipeline.py` and `store.py` unless the API
   layer truly needs a dependency.
 - Keep tests deterministic and filesystem-isolated with temporary directories.
