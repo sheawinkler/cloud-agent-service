@@ -173,18 +173,6 @@ Do not make it required yet. It adds a Node/npm toolchain and another policy
 surface. For the current local MVP, repo inspection plus scoped files are simpler
 and easier to audit.
 
-### RTK
-
-RTK looks useful for agent/operator ergonomics, not for the core runtime path.
-Its README describes a Rust CLI proxy that filters and compresses command output,
-with support for git, tests, Docker, AWS, logs, and other common commands.
-
-Recommended use: optional developer/agent monitor helper.
-
-Do not make it required yet. The application should persist raw deterministic
-events and artifacts. A command-output compressor is helpful for humans and LLM
-operators, but it should not become the source of truth for job state.
-
 ## Current Boundary
 
 The MVP is deliberately local:
