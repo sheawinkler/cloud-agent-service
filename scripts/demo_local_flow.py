@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import sys
 import tempfile
+from argparse import ArgumentParser
 from dataclasses import asdict
 from pathlib import Path
 
@@ -24,6 +25,14 @@ def build_demo_repo(root: Path) -> Path:
 
 
 def main() -> None:
+    parser = ArgumentParser(description="Run the local happy-path demo.")
+    parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Print the full JSON result instead of the concise demo summary.",
+    )
+    args = parser.parse_args()
+
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
         source_repo = build_demo_repo(root)
@@ -40,21 +49,28 @@ def main() -> None:
 
         job_id = flow.create_job(request)
         result = flow.run_job(job_id)
-        print(
-            json.dumps(
-                {
-                    "job_id": job_id,
-                    "status": result.status,
-                    "changed_files": result.changed_files,
-                    "tests_failed": result.tests_failed,
-                    "deployment_status": result.deployment_status,
-                    "events": [event["event_type"] for event in result.events],
-                    "result": asdict(result),
-                },
-                indent=2,
-                sort_keys=True,
-            )
-        )
+        payload = {
+            "job_id": job_id,
+            "status": result.status,
+            "changed_files": result.changed_files,
+            "tests_failed": result.tests_failed,
+            "deployment_status": result.deployment_status,
+            "events": [event["event_type"] for event in result.events],
+            "result": asdict(result),
+        }
+        if args.json:
+            print(json.dumps(payload, indent=2, sort_keys=True))
+            return
+
+        print("Cloud Agent Service demo")
+        print(f"status: {result.status}")
+        print(f"job_id: {job_id}")
+        print(f"changed_files: {', '.join(result.changed_files)}")
+        print(f"tests_failed: {len(result.tests_failed)}")
+        print(f"deployment: {result.deployment_status}")
+        print("events:")
+        for event in payload["events"]:
+            print(f"  - {event}")
 
 
 if __name__ == "__main__":

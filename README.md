@@ -57,6 +57,7 @@ Monitoring:
 - `AGENTS.md`: operating instructions for coding agents.
 - `EVALUATION.md`: criteria for judging product and operational readiness.
 - `examples/agent_contract.json`: example worker payload and final result shape.
+- `demo.sh`: one-command local demo.
 - `scripts/demo_local_flow.py`: no-cloud, no-Docker proof path.
 - `llm.txt`: compact orientation file for LLM agents.
 
@@ -79,16 +80,22 @@ Monitoring:
 Run a complete local job without Docker or external services:
 
 ```bash
-python3 scripts/demo_local_flow.py
+./demo.sh
 ```
 
 The demo creates a temporary shopping-site repo, submits the buy-button request,
-runs the full service pipeline, and prints the final JSON result. Look for:
+runs the full service pipeline, and prints a short proof summary. Look for:
 
-- `"status": "succeeded"`
-- `"changed_files": ["index.html"]`
-- `"tests_failed": []`
-- `"job_succeeded"` in the event list
+- `status: succeeded`
+- `changed_files: index.html`
+- `tests_failed: 0`
+- `job_succeeded` in the event list
+
+For the full payload:
+
+```bash
+./demo.sh --json
+```
 
 ## Local Run
 
@@ -96,7 +103,7 @@ Compile and test:
 
 ```bash
 python3 -m compileall cloud_agent_service scripts tests
-python3 scripts/demo_local_flow.py
+./demo.sh
 python3 -m unittest tests.test_cloud_agent_service_flow
 python3 -m unittest discover -s tests
 ```

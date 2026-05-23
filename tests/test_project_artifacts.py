@@ -1,6 +1,5 @@
 import json
 import subprocess
-import sys
 import unittest
 from pathlib import Path
 
@@ -18,7 +17,7 @@ class ProjectArtifactTests(unittest.TestCase):
 
     def test_demo_local_flow_succeeds(self):
         result = subprocess.run(
-            [sys.executable, "scripts/demo_local_flow.py"],
+            ["./demo.sh", "--json"],
             cwd=ROOT,
             capture_output=True,
             text=True,
