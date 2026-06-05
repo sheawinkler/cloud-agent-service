@@ -6,6 +6,10 @@ import os
 import re
 import shutil
 import subprocess
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
 from dataclasses import asdict
 from pathlib import Path
 from typing import Any
@@ -18,7 +22,9 @@ from cloud_agent_service.models import (
     JobResult,
     JobStatus,
     NormalizedPrompt,
+    PreviewArtifact,
     RepoProfile,
+    RepoProvider,
     RiskLevel,
     WorkerJobPayload,
 )
@@ -58,6 +64,10 @@ class BudgetExceededError(RuntimeError):
     pass
 
 
+class GitHubAppError(RuntimeError):
+    pass
+
+
 class RequestValidator:
     def validate(self, request: JobRequest) -> None:
         prompt = request.prompt.strip()
@@ -65,9 +75,13 @@ class RequestValidator:
             raise RequestValidationError("prompt is required")
         if len(prompt) > request.max_prompt_chars:
             raise RequestValidationError(f"prompt exceeds {request.max_prompt_chars} characters")
-        repo_path = Path(request.repo_path).expanduser()
-        if not repo_path.exists() or not repo_path.is_dir():
-            raise RequestValidationError(f"repo_path is not a directory: {request.repo_path}")
+        if request.repo_provider == RepoProvider.LOCAL:
+            repo_path = Path(request.repo_path).expanduser()
+            if not request.repo_path or not repo_path.exists() or not repo_path.is_dir():
+                raise RequestValidationError(f"repo_path is not a directory: {request.repo_path}")
+        elif request.repo_provider == RepoProvider.GITHUB:
+            if not request.github_repo or not re.fullmatch(r"[^/\s]+/[^/\s]+", request.github_repo):
+                raise RequestValidationError("github_repo must be in owner/repo format")
         if request.token_budget <= 0:
             raise RequestValidationError("token_budget must be positive")
         if request.max_runtime_seconds <= 0:
@@ -171,6 +185,204 @@ class LocalRepoConnector:
         )
         shutil.copytree(source, destination, ignore=ignore)
         return destination
+
+
+class GitHubAppClient:
+    API_VERSION = "2022-11-28"
+
+    def __init__(
+        self,
+        app_id: str | None = None,
+        installation_id: str | None = None,
+        private_key: str | None = None,
+        api_url: str | None = None,
+    ) -> None:
+        self.app_id = app_id or os.environ.get("GITHUB_APP_ID", "")
+        self.installation_id = installation_id or os.environ.get(
+            "GITHUB_APP_INSTALLATION_ID",
+            "",
+        )
+        self.private_key = private_key or os.environ.get("GITHUB_APP_PRIVATE_KEY", "")
+        self.api_url = (api_url or os.environ.get("GITHUB_API_URL", "https://api.github.com")).rstrip(
+            "/"
+        )
+
+    def status(self) -> GitHubIntegrationStatus:
+        missing = []
+        if not self.app_id:
+            missing.append("GITHUB_APP_ID")
+        if not self.installation_id:
+            missing.append("GITHUB_APP_INSTALLATION_ID")
+        if not self.private_key:
+            missing.append("GITHUB_APP_PRIVATE_KEY")
+        return GitHubIntegrationStatus(
+            configured=not missing,
+            provider="github-app",
+            missing=missing,
+            mode="ready" if not missing else "local-mock",
+        )
+
+    def installation_token(self) -> str:
+        status = self.status()
+        if not status.configured:
+            raise GitHubAppError("GitHub App is not configured")
+        payload = self._request_json(
+            "POST",
+            f"/app/installations/{self.installation_id}/access_tokens",
+            auth_token=self._jwt(),
+            jwt_auth=True,
+        )
+        token = payload.get("token")
+        if not isinstance(token, str) or not token:
+            raise GitHubAppError("GitHub installation token response did not include token")
+        return token
+
+    def create_pull_request(
+        self,
+        token: str,
+        repo_full_name: str,
+        branch: str,
+        base_branch: str,
+        title: str,
+        body: str,
+    ) -> str:
+        existing = self._find_existing_pr(token, repo_full_name, branch)
+        if existing:
+            return existing
+        payload = self._request_json(
+            "POST",
+            f"/repos/{repo_full_name}/pulls",
+            auth_token=token,
+            body={
+                "title": title,
+                "head": branch,
+                "base": base_branch,
+                "body": body,
+            },
+        )
+        html_url = payload.get("html_url")
+        if not isinstance(html_url, str):
+            raise GitHubAppError("GitHub pull request response did not include html_url")
+        number = payload.get("number")
+        if isinstance(number, int):
+            self.create_issue_comment(token, repo_full_name, number, body)
+        return html_url
+
+    def create_issue_comment(
+        self,
+        token: str,
+        repo_full_name: str,
+        issue_number: int,
+        body: str,
+    ) -> None:
+        self._request_json(
+            "POST",
+            f"/repos/{repo_full_name}/issues/{issue_number}/comments",
+            auth_token=token,
+            body={"body": body},
+        )
+
+    def _find_existing_pr(self, token: str, repo_full_name: str, branch: str) -> str | None:
+        owner = repo_full_name.split("/", 1)[0]
+        query = urllib.parse.urlencode(
+            {
+                "state": "open",
+                "head": f"{owner}:{branch}",
+                "per_page": "1",
+            }
+        )
+        payload = self._request_json(
+            "GET",
+            f"/repos/{repo_full_name}/pulls?{query}",
+            auth_token=token,
+        )
+        if isinstance(payload, list) and payload:
+            html_url = payload[0].get("html_url")
+            return html_url if isinstance(html_url, str) else None
+        return None
+
+    def _jwt(self) -> str:
+        try:
+            import jwt
+        except ImportError as exc:
+            raise GitHubAppError("PyJWT is required for GitHub App JWT signing") from exc
+        now = int(time.time())
+        payload = {
+            "iat": now - 60,
+            "exp": now + 540,
+            "iss": self.app_id,
+        }
+        private_key = self.private_key.replace("\\n", "\n")
+        return jwt.encode(payload, private_key, algorithm="RS256")
+
+    def _request_json(
+        self,
+        method: str,
+        path: str,
+        auth_token: str,
+        body: dict[str, Any] | None = None,
+        jwt_auth: bool = False,
+    ) -> Any:
+        data = None
+        headers = {
+            "accept": "application/vnd.github+json",
+            "authorization": f"Bearer {auth_token}",
+            "x-github-api-version": self.API_VERSION,
+            "user-agent": "cloud-agent-service",
+        }
+        if body is not None:
+            data = json.dumps(body).encode("utf-8")
+            headers["content-type"] = "application/json"
+        request = urllib.request.Request(
+            self.api_url + path,
+            data=data,
+            headers=headers,
+            method=method,
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=30) as response:
+                text = response.read().decode("utf-8")
+        except urllib.error.HTTPError as exc:
+            detail = exc.read().decode("utf-8")
+            auth_kind = "JWT" if jwt_auth else "installation token"
+            raise GitHubAppError(
+                f"GitHub API {method} {path} failed with {exc.code} using {auth_kind}: {detail}"
+            ) from exc
+        return json.loads(text) if text else {}
+
+
+class GitHubRepoConnector:
+    def __init__(self, client: GitHubAppClient) -> None:
+        self.client = client
+
+    def clone(
+        self,
+        repo_full_name: str,
+        base_branch: str,
+        workspace_root: str | Path,
+        job_id: str,
+    ) -> tuple[Path, str]:
+        token = self.client.installation_token()
+        destination = Path(workspace_root).expanduser().resolve() / job_id / "repo"
+        if destination.exists():
+            shutil.rmtree(destination)
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        remote = f"https://github.com/{repo_full_name}.git"
+        command = [
+            "git",
+            "-c",
+            f"http.extraheader=Authorization: Bearer {token}",
+            "clone",
+            "--branch",
+            base_branch,
+            "--single-branch",
+            remote,
+            str(destination),
+        ]
+        result = subprocess.run(command, capture_output=True, text=True, check=False)
+        if result.returncode != 0:
+            raise GitHubAppError("GitHub clone failed")
+        return destination, token
 
 
 class DependencyInstaller:
@@ -432,6 +644,81 @@ class LocalGitHubSync:
         return f"local://github/pr/{job_id}"
 
 
+class GitHubAppSync:
+    def __init__(self, client: GitHubAppClient) -> None:
+        self.client = client
+
+    def sync(
+        self,
+        repo_path: str | Path,
+        repo_full_name: str,
+        base_branch: str,
+        working_branch: str,
+        token: str,
+        result: dict[str, Any],
+        evidence: dict[str, Any],
+    ) -> str:
+        repo = Path(repo_path)
+        self._git(repo, ["config", "user.name", "cloud-agent-service[bot]"])
+        self._git(repo, ["config", "user.email", "cloud-agent-service@users.noreply.github.com"])
+        self._git(repo, ["checkout", "-B", working_branch])
+        for rel_path in result["changed_files"]:
+            self._git(repo, ["add", rel_path])
+        status = self._git(repo, ["status", "--porcelain"])
+        if status.strip():
+            self._git(repo, ["commit", "-m", "Apply cloud agent changes"])
+            self._git(
+                repo,
+                [
+                    "-c",
+                    f"http.extraheader=Authorization: Bearer {token}",
+                    "push",
+                    "origin",
+                    f"HEAD:refs/heads/{working_branch}",
+                    "--force-with-lease",
+                ],
+            )
+        body = self._pr_body(result, evidence)
+        return self.client.create_pull_request(
+            token=token,
+            repo_full_name=repo_full_name,
+            branch=working_branch,
+            base_branch=base_branch,
+            title="Apply cloud agent changes",
+            body=body,
+        )
+
+    @staticmethod
+    def _git(repo: Path, args: list[str]) -> str:
+        result = subprocess.run(
+            ["git", *args],
+            cwd=repo,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if result.returncode != 0:
+            raise GitHubAppError(f"git {' '.join(args[:2])} failed")
+        return result.stdout
+
+    @staticmethod
+    def _pr_body(result: dict[str, Any], evidence: dict[str, Any]) -> str:
+        changed = "\n".join(f"- `{path}`" for path in result["changed_files"]) or "- none"
+        tests = "\n".join(f"- {test}" for test in result["tests_passed"]) or "- none"
+        risks = "\n".join(f"- {risk}" for risk in result.get("residual_risks", [])) or "- none"
+        preview_url = evidence.get("preview_url") or "not available"
+        return (
+            "## Cloud Agent Result\n\n"
+            f"Preview: `{preview_url}`\n\n"
+            "### Changed files\n"
+            f"{changed}\n\n"
+            "### Tests passed\n"
+            f"{tests}\n\n"
+            "### Residual risks\n"
+            f"{risks}\n"
+        )
+
+
 class GitHubIntegration:
     REQUIRED_ENV = [
         "GITHUB_APP_ID",
@@ -439,13 +726,67 @@ class GitHubIntegration:
         "GITHUB_APP_PRIVATE_KEY",
     ]
 
+    def __init__(self, client: GitHubAppClient | None = None) -> None:
+        self.client = client or GitHubAppClient()
+
     def status(self) -> GitHubIntegrationStatus:
-        missing = [name for name in self.REQUIRED_ENV if not os.environ.get(name)]
-        return GitHubIntegrationStatus(
-            configured=not missing,
-            provider="github-app",
-            missing=missing,
-            mode="ready" if not missing else "local-mock",
+        return self.client.status()
+
+
+class PreviewPublisher:
+    def publish(
+        self,
+        repo_path: str | Path,
+        artifacts_dir: str | Path,
+        job_id: str,
+        changed_files: list[str],
+    ) -> PreviewArtifact:
+        repo = Path(repo_path)
+        artifacts = Path(artifacts_dir)
+        preview_dir = artifacts / "previews" / job_id
+        preview_dir.mkdir(parents=True, exist_ok=True)
+        html_candidates = [
+            rel_path for rel_path in changed_files if rel_path.endswith(".html")
+        ] or [str(path.relative_to(repo)) for path in sorted(repo.rglob("*.html"))[:1]]
+        if not html_candidates:
+            proof_path = preview_dir / "browser-proof.json"
+            proof_path.write_text(
+                json.dumps({"checks": {"html_preview_available": False}}, indent=2),
+                encoding="utf-8",
+            )
+            return PreviewArtifact(
+                preview_url=None,
+                artifact_path=None,
+                browser_proof_path=str(proof_path),
+                checks={"html_preview_available": False},
+            )
+
+        source = repo / html_candidates[0]
+        target = preview_dir / Path(html_candidates[0]).name
+        shutil.copy2(source, target)
+        content = target.read_text(encoding="utf-8", errors="ignore")
+        checks = {
+            "html_preview_available": True,
+            "buy_button_present": 'data-agent="buy-button"' in content,
+        }
+        proof_path = preview_dir / "browser-proof.json"
+        proof_path.write_text(
+            json.dumps(
+                {
+                    "provider": "local-html-proof",
+                    "source_file": html_candidates[0],
+                    "checks": checks,
+                },
+                indent=2,
+                sort_keys=True,
+            ),
+            encoding="utf-8",
+        )
+        return PreviewArtifact(
+            preview_url=f"local://preview/{job_id}/{target.name}",
+            artifact_path=str(target),
+            browser_proof_path=str(proof_path),
+            checks=checks,
         )
 
 
@@ -453,8 +794,15 @@ class LocalDeployer:
     def deploy(self, artifacts_dir: str | Path, job_id: str, policy: DeploymentPolicy) -> str:
         if policy == DeploymentPolicy.NEVER:
             return "skipped: deployment disabled"
-        if policy == DeploymentPolicy.MANUAL:
+        if policy in {
+            DeploymentPolicy.MANUAL,
+            DeploymentPolicy.PRODUCTION_APPROVAL,
+        }:
             return "ready: manual approval required"
+        if policy == DeploymentPolicy.PR_ONLY:
+            return "skipped: PR only"
+        if policy == DeploymentPolicy.PREVIEW_ONLY:
+            return "ready: preview only"
         artifacts = Path(artifacts_dir)
         artifacts.mkdir(parents=True, exist_ok=True)
         deploy_path = artifacts / f"{job_id}-deployment.json"
@@ -464,12 +812,15 @@ class LocalDeployer:
                     "provider": "local-deploy-mock",
                     "job_id": job_id,
                     "status": "deployed",
+                    "policy": policy.value,
                 },
                 indent=2,
                 sort_keys=True,
             ),
             encoding="utf-8",
         )
+        if policy == DeploymentPolicy.STAGING_AUTO:
+            return "deployed: local staging mock deployment recorded"
         return "deployed: local mock deployment recorded"
 
 
@@ -487,13 +838,17 @@ class AgentCloudFlow:
         self.upgrader = PromptUpgrader()
         self.planner = Planner()
         self.repo_connector = LocalRepoConnector()
+        self.github_client = GitHubAppClient()
+        self.github_repo_connector = GitHubRepoConnector(self.github_client)
         self.repo_analyzer = RepoAnalyzer()
         self.dependency_installer = DependencyInstaller()
         self.agent = LocalCodingAgent()
         self.test_runner = TestRunner()
         self.policy_gate = PolicyGate()
         self.github_sync = LocalGitHubSync()
-        self.github_integration = GitHubIntegration()
+        self.github_app_sync = GitHubAppSync(self.github_client)
+        self.github_integration = GitHubIntegration(self.github_client)
+        self.preview_publisher = PreviewPublisher()
         self.deployer = LocalDeployer()
 
     def create_job(self, request: JobRequest) -> str:
@@ -504,7 +859,11 @@ class AgentCloudFlow:
                 "job_id": job_id,
                 "user_id": request.user_id,
                 "prompt": request.prompt,
-                "repo_path": str(Path(request.repo_path).expanduser().resolve()),
+                "repo_path": self._repo_path_for_store(request),
+                "repo_provider": request.repo_provider.value,
+                "github_repo": request.github_repo,
+                "parent_job_id": request.parent_job_id,
+                "working_branch": self._working_branch(job_id, request),
                 "base_branch": request.base_branch,
                 "deploy_policy": request.deploy_policy.value,
                 "token_budget": request.token_budget,
@@ -533,10 +892,12 @@ class AgentCloudFlow:
         return WorkerJobPayload(
             job_id=job_id,
             user_id=request.user_id,
-            repo_provider="local",
+            repo_provider=request.repo_provider.value,
             repo_path=request.repo_path,
+            github_repo=request.github_repo,
             base_branch=request.base_branch,
-            working_branch=f"agent/{job_id}",
+            working_branch=job["working_branch"] or f"agent/{job_id}",
+            parent_job_id=request.parent_job_id,
             normalized_prompt=plan.normalized_prompt,
             acceptance_criteria=plan.acceptance_criteria,
             allowed_python_modules=plan.allowed_python_modules,
@@ -610,23 +971,55 @@ class AgentCloudFlow:
 
         request = self._request_from_job(job)
         agent_result = self._empty_agent_result()
+        evidence: dict[str, Any] = {}
 
         try:
             self._charge_budget(job_id, request, "dispatch", 64, "worker dispatch envelope")
             self.store.update_job(job_id, status=JobStatus.DISPATCHED)
             self.store.add_event(job_id, "agent_dispatched", {"mode": "local-container-contract"})
 
-            workspace_repo = self.repo_connector.clone(
-                request.repo_path, self.workspace_root, job_id
-            )
+            github_token: str | None = None
+            if request.repo_provider == RepoProvider.GITHUB:
+                if not request.github_repo:
+                    raise RequestValidationError("github_repo is required for GitHub jobs")
+                workspace_repo, github_token = self.github_repo_connector.clone(
+                    request.github_repo,
+                    request.base_branch,
+                    self.workspace_root,
+                    job_id,
+                )
+            else:
+                workspace_repo = self.repo_connector.clone(
+                    request.repo_path,
+                    self.workspace_root,
+                    job_id,
+                )
             self.store.update_job(
                 job_id, workspace_path=str(workspace_repo), status=JobStatus.RUNNING
             )
             self.store.add_event(job_id, "repo_cloned", {"workspace_path": str(workspace_repo)})
 
             repo_profile = self.repo_analyzer.analyze(workspace_repo)
+            repo_key = self._repo_key(request)
+            self.store.upsert_repo_memory(
+                repo_key,
+                request.repo_provider.value,
+                asdict(repo_profile),
+                repo_profile.suggested_test_commands,
+                job_id,
+            )
             self._charge_budget(job_id, request, "repo_analysis", 128, "repo profile detection")
             self.store.add_event(job_id, "repo_analyzed", asdict(repo_profile))
+            repo_memory = self.store.get_repo_memory(repo_key)
+            if repo_memory:
+                self.store.add_event(
+                    job_id,
+                    "repo_memory_loaded",
+                    {
+                        "repo_key": repo_key,
+                        "last_job_id": repo_memory["last_job_id"],
+                    },
+                )
 
             normalized = self.upgrader.upgrade(request)
             self._charge_budget(
@@ -679,10 +1072,35 @@ class AgentCloudFlow:
             if not all(gates.values()):
                 return self._fail(job_id, agent_result, gates, "not deployed: policy gate failed")
 
+            preview = self.preview_publisher.publish(
+                workspace_repo,
+                self.artifacts_dir,
+                job_id,
+                agent_result["changed_files"],
+            )
+            evidence = self._build_evidence(job_id, preview, repo_profile, request)
+            self.store.add_event(job_id, "preview_created", asdict(preview))
+            self.store.add_event(job_id, "browser_proof_finished", preview.checks)
+
             self.store.update_job(job_id, status=JobStatus.SYNCING)
-            pr_url = self.github_sync.sync(self.artifacts_dir, job_id, agent_result)
-            self._charge_budget(job_id, request, "sync", 64, "mock PR sync")
-            self.store.add_event(job_id, "branch_pushed", {"provider": "local-github-mock"})
+            if request.repo_provider == RepoProvider.GITHUB:
+                if not request.github_repo or not github_token:
+                    raise RequestValidationError("GitHub sync requires github_repo and token")
+                pr_url = self.github_app_sync.sync(
+                    workspace_repo,
+                    request.github_repo,
+                    request.base_branch,
+                    job["working_branch"] or f"agent/{job_id}",
+                    github_token,
+                    agent_result,
+                    evidence,
+                )
+                sync_provider = "github-app"
+            else:
+                pr_url = self.github_sync.sync(self.artifacts_dir, job_id, agent_result)
+                sync_provider = "local-github-mock"
+            self._charge_budget(job_id, request, "sync", 64, "PR sync")
+            self.store.add_event(job_id, "branch_pushed", {"provider": sync_provider})
             self.store.add_event(job_id, "pr_created_or_updated", {"pr_url": pr_url})
 
             self.store.update_job(job_id, status=JobStatus.DEPLOYING)
@@ -701,6 +1119,7 @@ class AgentCloudFlow:
                 pr_url=pr_url,
                 deployment_status=deployment_status,
                 residual_risks=[],
+                evidence=evidence,
             )
             self.store.update_job(
                 job_id,
@@ -729,6 +1148,9 @@ class AgentCloudFlow:
         return JobRequest(
             prompt=job["prompt"],
             repo_path=job["repo_path"],
+            repo_provider=RepoProvider(job["repo_provider"]),
+            github_repo=job["github_repo"],
+            parent_job_id=job["parent_job_id"],
             user_id=job["user_id"],
             base_branch=job["base_branch"],
             deploy_policy=DeploymentPolicy(job["deploy_policy"]),
@@ -737,6 +1159,44 @@ class AgentCloudFlow:
             max_runtime_seconds=job["max_runtime_seconds"],
             max_changed_files=job["max_changed_files"],
         )
+
+    @staticmethod
+    def _repo_path_for_store(request: JobRequest) -> str:
+        if request.repo_provider == RepoProvider.GITHUB:
+            return ""
+        return str(Path(request.repo_path).expanduser().resolve())
+
+    def _working_branch(self, job_id: str, request: JobRequest) -> str:
+        if request.parent_job_id:
+            parent = self.store.get_job(request.parent_job_id)
+            if parent and parent.get("working_branch"):
+                return parent["working_branch"]
+        return f"agent/{job_id}"
+
+    @staticmethod
+    def _repo_key(request: JobRequest) -> str:
+        if request.repo_provider == RepoProvider.GITHUB and request.github_repo:
+            return f"github:{request.github_repo}"
+        return f"local:{Path(request.repo_path).expanduser().resolve()}"
+
+    @staticmethod
+    def _build_evidence(
+        job_id: str,
+        preview: PreviewArtifact,
+        repo_profile: RepoProfile,
+        request: JobRequest,
+    ) -> dict[str, Any]:
+        return {
+            "job_id": job_id,
+            "repo_provider": request.repo_provider.value,
+            "github_repo": request.github_repo,
+            "preview_url": preview.preview_url,
+            "preview_artifact_path": preview.artifact_path,
+            "browser_proof_path": preview.browser_proof_path,
+            "browser_checks": preview.checks,
+            "repo_profile": asdict(repo_profile),
+            "next_action": "review_pr",
+        }
 
     @staticmethod
     def _estimated_tokens(text: str) -> int:
@@ -795,6 +1255,7 @@ class AgentCloudFlow:
             deployment_status=result["deployment_status"],
             residual_risks=result["residual_risks"],
             events=self.store.list_events(result["job_id"]),
+            evidence=result.get("evidence", {}),
         )
 
     def _fail(
@@ -812,6 +1273,7 @@ class AgentCloudFlow:
             pr_url=None,
             deployment_status=deployment_status,
             residual_risks=["Validation failed; branch was not synced or deployed."],
+            evidence={},
         )
         self.store.update_job(job_id, status=JobStatus.FAILED, result_json=asdict(result))
         self.store.add_event(job_id, "job_failed", {"reason": deployment_status})
@@ -826,6 +1288,7 @@ class AgentCloudFlow:
         pr_url: str | None,
         deployment_status: str,
         residual_risks: list[str],
+        evidence: dict[str, Any],
     ) -> JobResult:
         return JobResult(
             job_id=job_id,
@@ -840,6 +1303,7 @@ class AgentCloudFlow:
             deployment_status=deployment_status,
             residual_risks=residual_risks + agent_result.get("residual_risks", []),
             events=self.store.list_events(job_id),
+            evidence=evidence,
         )
 
     @staticmethod
@@ -847,7 +1311,8 @@ class AgentCloudFlow:
         payload = "|".join(
             [
                 request.user_id,
-                str(Path(request.repo_path).expanduser().resolve()),
+                request.repo_provider.value,
+                request.github_repo or str(Path(request.repo_path).expanduser().resolve()),
                 request.base_branch,
                 request.prompt,
                 os.urandom(8).hex(),

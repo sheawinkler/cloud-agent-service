@@ -3,7 +3,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from cloud_agent_service.models import DeploymentPolicy, JobRequest, JobStatus
+from cloud_agent_service.models import DeploymentPolicy, JobRequest, JobStatus, RepoProvider
 from cloud_agent_service.pipeline import (
     AgentCloudFlow,
     DependencyInstaller,
@@ -69,11 +69,19 @@ class CloudAgentServiceFlowTests(unittest.TestCase):
             self.assertEqual(f"local://github/pr/{job_id}", result.pr_url)
             self.assertEqual("deployed: local mock deployment recorded", result.deployment_status)
             self.assertIn("protected_path_policy", result.policy_gate_results)
+            self.assertEqual(
+                "local://preview/" + job_id + "/index.html",
+                result.evidence["preview_url"],
+            )
+            self.assertTrue(result.evidence["browser_checks"]["buy_button_present"])
 
             workspace_index = root / "workspaces" / job_id / "repo" / "index.html"
             self.assertIn('data-agent="buy-button"', workspace_index.read_text(encoding="utf-8"))
             self.assertTrue((root / "artifacts" / f"{job_id}-pr.json").exists())
             self.assertTrue((root / "artifacts" / f"{job_id}-deployment.json").exists())
+            self.assertTrue(
+                (root / "artifacts" / "previews" / job_id / "browser-proof.json").exists()
+            )
             self.assertGreater(flow.store.budget_tokens_used(job_id), 0)
 
             expected_events = {
@@ -89,12 +97,17 @@ class CloudAgentServiceFlowTests(unittest.TestCase):
                 "files_changed",
                 "tests_finished",
                 "policy_gate_result",
+                "preview_created",
+                "browser_proof_finished",
                 "branch_pushed",
                 "pr_created_or_updated",
                 "deployment_finished",
                 "job_succeeded",
+                "repo_memory_loaded",
             }
             self.assertTrue(expected_events.issubset(set(events)))
+            repo_key = f"local:{repo.resolve()}"
+            self.assertEqual(job_id, flow.store.get_repo_memory(repo_key)["last_job_id"])
 
     def test_worker_payload_preserves_intake_limits(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -118,6 +131,47 @@ class CloudAgentServiceFlowTests(unittest.TestCase):
             self.assertEqual(77, payload.max_runtime_seconds)
             self.assertEqual(1, payload.max_changed_files)
             self.assertIn("policy_gate_results", payload.output_schema)
+
+    def test_github_worker_payload_uses_github_provider_without_local_path(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            flow = self._build_flow(Path(tmp))
+            request = JobRequest(
+                prompt="For my shopping website, create a buy button.",
+                repo_provider=RepoProvider.GITHUB,
+                github_repo="owner/shop",
+                token_budget=1234,
+            )
+
+            job_id = flow.create_job(request)
+            payload = flow.build_worker_payload(job_id)
+
+            self.assertEqual("github", payload.repo_provider)
+            self.assertEqual("owner/shop", payload.github_repo)
+            self.assertEqual("", payload.repo_path)
+            self.assertEqual("agent/" + job_id, payload.working_branch)
+
+    def test_continuation_job_reuses_parent_branch(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = self._build_repo(root)
+            flow = self._build_flow(root)
+            parent_id = flow.create_job(
+                JobRequest(
+                    prompt="For my shopping website, create a buy button.",
+                    repo_path=str(repo),
+                )
+            )
+            child_id = flow.create_job(
+                JobRequest(
+                    prompt="Make the buy button blue too.",
+                    repo_path=str(repo),
+                    parent_job_id=parent_id,
+                )
+            )
+
+            parent = flow.store.get_job(parent_id)
+            child = flow.store.get_job(child_id)
+            self.assertEqual(parent["working_branch"], child["working_branch"])
 
     def test_persisted_diff_policy_limit_blocks_sync_and_deploy(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -164,6 +218,29 @@ class CloudAgentServiceFlowTests(unittest.TestCase):
             self.assertEqual("deployed: local mock deployment recorded", approved.deployment_status)
             self.assertTrue((root / "artifacts" / f"{job_id}-deployment.json").exists())
             self.assertIn("deployment_approved", events)
+
+    def test_deployment_policy_matrix_has_distinct_local_outcomes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = self._build_repo(root)
+            flow = self._build_flow(root)
+            cases = {
+                DeploymentPolicy.PR_ONLY: "skipped: PR only",
+                DeploymentPolicy.PREVIEW_ONLY: "ready: preview only",
+                DeploymentPolicy.STAGING_AUTO: "deployed: local staging mock deployment recorded",
+                DeploymentPolicy.PRODUCTION_APPROVAL: "ready: manual approval required",
+            }
+
+            for policy, expected in cases.items():
+                job_id = flow.create_job(
+                    JobRequest(
+                        prompt="For my shopping website, create a buy button.",
+                        repo_path=str(repo),
+                        deploy_policy=policy,
+                    )
+                )
+                result = flow.run_job(job_id)
+                self.assertEqual(expected, result.deployment_status)
 
     def test_tiny_budget_stops_before_sync_and_deploy(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -262,6 +339,21 @@ class CloudAgentServiceFlowTests(unittest.TestCase):
             self.assertFalse(status.configured)
             self.assertEqual("github-app", status.provider)
             self.assertIn("GITHUB_APP_ID", status.missing)
+
+    def test_github_status_reports_ready_when_app_env_is_present(self):
+        with tempfile.TemporaryDirectory() as tmp, patch.dict(
+            "os.environ",
+            {
+                "GITHUB_APP_ID": "123",
+                "GITHUB_APP_INSTALLATION_ID": "456",
+                "GITHUB_APP_PRIVATE_KEY": "fake-key",
+            },
+        ):
+            flow = self._build_flow(Path(tmp))
+            status = flow.github_status()
+
+            self.assertTrue(status.configured)
+            self.assertEqual("ready", status.mode)
 
     def test_dependency_installer_keeps_allowlist_explicit(self):
         with tempfile.TemporaryDirectory() as tmp:

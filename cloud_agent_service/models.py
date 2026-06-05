@@ -31,12 +31,24 @@ class DeploymentPolicy(StrEnum):
     MANUAL = "manual"
     LOCAL = "local"
     NEVER = "never"
+    PR_ONLY = "pr_only"
+    PREVIEW_ONLY = "preview_only"
+    STAGING_AUTO = "staging_auto"
+    PRODUCTION_APPROVAL = "production_approval"
+
+
+class RepoProvider(StrEnum):
+    LOCAL = "local"
+    GITHUB = "github"
 
 
 @dataclass(frozen=True)
 class JobRequest:
     prompt: str
-    repo_path: str
+    repo_path: str = ""
+    repo_provider: RepoProvider = RepoProvider.LOCAL
+    github_repo: str | None = None
+    parent_job_id: str | None = None
     user_id: str = "local-user"
     base_branch: str = "main"
     deploy_policy: DeploymentPolicy = DeploymentPolicy.MANUAL
@@ -84,6 +96,7 @@ class JobResult:
     deployment_status: str
     residual_risks: list[str]
     events: list[dict[str, Any]]
+    evidence: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -92,8 +105,10 @@ class WorkerJobPayload:
     user_id: str
     repo_provider: str
     repo_path: str
+    github_repo: str | None
     base_branch: str
     working_branch: str
+    parent_job_id: str | None
     normalized_prompt: str
     acceptance_criteria: list[str]
     allowed_python_modules: list[str]
@@ -121,3 +136,11 @@ class GitHubIntegrationStatus:
     provider: str
     missing: list[str]
     mode: str
+
+
+@dataclass
+class PreviewArtifact:
+    preview_url: str | None
+    artifact_path: str | None
+    browser_proof_path: str | None
+    checks: dict[str, bool] = field(default_factory=dict)

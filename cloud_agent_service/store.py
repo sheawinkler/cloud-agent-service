@@ -36,6 +36,10 @@ class JobStore:
                         prompt TEXT NOT NULL,
                         normalized_prompt TEXT NOT NULL DEFAULT '',
                         repo_path TEXT NOT NULL,
+                        repo_provider TEXT NOT NULL DEFAULT 'local',
+                        github_repo TEXT,
+                        parent_job_id TEXT,
+                        working_branch TEXT NOT NULL DEFAULT '',
                         workspace_path TEXT NOT NULL DEFAULT '',
                         base_branch TEXT NOT NULL,
                         deploy_policy TEXT NOT NULL,
@@ -76,6 +80,18 @@ class JobStore:
                     )
                     """
                 )
+                conn.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS repo_memory (
+                        repo_key TEXT PRIMARY KEY,
+                        provider TEXT NOT NULL,
+                        profile_json TEXT NOT NULL,
+                        test_commands_json TEXT NOT NULL,
+                        last_job_id TEXT NOT NULL,
+                        updated_at TEXT NOT NULL
+                    )
+                    """
+                )
                 self._ensure_job_columns(conn)
 
     def _ensure_job_columns(self, conn: sqlite3.Connection) -> None:
@@ -87,6 +103,10 @@ class JobStore:
             "max_prompt_chars": "INTEGER NOT NULL DEFAULT 8000",
             "max_runtime_seconds": "INTEGER NOT NULL DEFAULT 600",
             "max_changed_files": "INTEGER NOT NULL DEFAULT 12",
+            "repo_provider": "TEXT NOT NULL DEFAULT 'local'",
+            "github_repo": "TEXT",
+            "parent_job_id": "TEXT",
+            "working_branch": "TEXT NOT NULL DEFAULT ''",
         }
         for name, definition in additions.items():
             if name not in columns:
@@ -99,18 +119,23 @@ class JobStore:
                 conn.execute(
                     """
                     INSERT INTO jobs (
-                        job_id, user_id, prompt, repo_path, base_branch,
+                        job_id, user_id, prompt, repo_path, repo_provider,
+                        github_repo, parent_job_id, working_branch, base_branch,
                         deploy_policy, token_budget, max_prompt_chars,
-                        max_runtime_seconds, max_changed_files, status,
-                        created_at, updated_at
+                        max_runtime_seconds, max_changed_files, status, created_at,
+                        updated_at
                     )
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         job["job_id"],
                         job["user_id"],
                         job["prompt"],
                         job["repo_path"],
+                        job["repo_provider"],
+                        job.get("github_repo"),
+                        job.get("parent_job_id"),
+                        job["working_branch"],
                         job["base_branch"],
                         job["deploy_policy"],
                         job["token_budget"],
@@ -122,6 +147,53 @@ class JobStore:
                         now,
                     ),
                 )
+
+    def upsert_repo_memory(
+        self,
+        repo_key: str,
+        provider: str,
+        profile: dict[str, Any],
+        test_commands: list[str],
+        job_id: str,
+    ) -> None:
+        with closing(self._connect()) as conn:
+            with conn:
+                conn.execute(
+                    """
+                    INSERT INTO repo_memory (
+                        repo_key, provider, profile_json, test_commands_json,
+                        last_job_id, updated_at
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(repo_key) DO UPDATE SET
+                        provider = excluded.provider,
+                        profile_json = excluded.profile_json,
+                        test_commands_json = excluded.test_commands_json,
+                        last_job_id = excluded.last_job_id,
+                        updated_at = excluded.updated_at
+                    """,
+                    (
+                        repo_key,
+                        provider,
+                        json.dumps(profile, sort_keys=True),
+                        json.dumps(test_commands, sort_keys=True),
+                        job_id,
+                        utc_now(),
+                    ),
+                )
+
+    def get_repo_memory(self, repo_key: str) -> dict[str, Any] | None:
+        with closing(self._connect()) as conn:
+            row = conn.execute(
+                "SELECT * FROM repo_memory WHERE repo_key = ?",
+                (repo_key,),
+            ).fetchone()
+        if not row:
+            return None
+        data = dict(row)
+        data["profile_json"] = json.loads(data["profile_json"])
+        data["test_commands_json"] = json.loads(data["test_commands_json"])
+        return data
 
     def update_job(self, job_id: str, **fields: Any) -> None:
         if not fields:

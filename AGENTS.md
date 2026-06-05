@@ -1,13 +1,19 @@
 # Agent Instructions for `cloud_agent_service`
 
-This directory is a local-only MVP for a cloud coding-agent platform. It mirrors
-the intended AWS/ECS architecture without creating cloud resources, pushing to
-GitHub, or deploying real infrastructure.
+This directory is an MVP for a cloud coding-agent platform. It mirrors the
+intended AWS/ECS architecture without creating cloud resources or deploying real
+infrastructure. Local repo jobs use mock PR/deploy artifacts. GitHub repo jobs
+use the real GitHub App clone, branch push, and PR path only when app
+credentials are configured.
 
 ## Boundaries
 
 - Keep work local unless the user explicitly asks for real cloud/GitHub actions.
 - Treat `local://github/pr/<job_id>` as a mock PR URL, not a real GitHub PR.
+- Treat `repo_provider=github` as a real GitHub App path; require
+  `/integrations/github/status` to report configured before claiming it is live.
+- Treat `local://preview/<job_id>/<file>` as a local preview artifact, not a
+  hosted internet URL.
 - Treat `deployed: local mock deployment recorded` as a local artifact, not a
   production deployment.
 - Do not persist secrets in docs, logs, SQLite data, test fixtures, or examples.
@@ -18,8 +24,9 @@ GitHub, or deploying real infrastructure.
 
 - `app.py`: FastAPI surface for job creation, status, and health.
 - `pipeline.py`: request validation, prompt upgrade, planning, local workspace
-  copy, repo profiling, budget charging, deterministic coding action, tests,
-  gates, mock PR sync, and mock deploy.
+  copy, GitHub App clone/sync, repo profiling and memory, budget charging,
+  deterministic coding action, tests, gates, preview proof, mock PR sync, and
+  mock deploy.
 - `store.py`: SQLite job and event persistence.
 - `orchestrator.py`: local queue plus persisted queued-job runner.
 - `worker.py`: container-friendly one-job or claim-next entry point.
@@ -63,6 +70,18 @@ curl -X POST http://127.0.0.1:8000/jobs \
   }'
 ```
 
+Submit and run a job in one API call:
+
+```bash
+curl -X POST http://127.0.0.1:8000/run-code-job \
+  -H 'content-type: application/json' \
+  -d '{
+    "prompt": "For my shopping website, create a buy button.",
+    "repo_path": "/host_repo",
+    "deploy_policy": "preview_only"
+  }'
+```
+
 Monitor the API:
 
 ```bash
@@ -91,16 +110,19 @@ A successful local run should emit these core events:
 4. `budget_charged`
 5. `repo_cloned`
 6. `repo_analyzed`
-7. `prompt_upgraded`
-8. `plan_created`
-9. `dependencies_requested`
-10. `files_changed`
-11. `tests_finished`
-12. `policy_gate_result`
-13. `branch_pushed`
-14. `pr_created_or_updated`
-15. `deployment_finished`
-16. `job_succeeded`
+7. `repo_memory_loaded`
+8. `prompt_upgraded`
+9. `plan_created`
+10. `dependencies_requested`
+11. `files_changed`
+12. `tests_finished`
+13. `policy_gate_result`
+14. `preview_created`
+15. `browser_proof_finished`
+16. `branch_pushed`
+17. `pr_created_or_updated`
+18. `deployment_finished`
+19. `job_succeeded`
 
 If a gate fails, the job must stop before mock PR sync or mock deployment.
 

@@ -95,10 +95,10 @@ def run_smoke(base_url: str, repo_path: str) -> dict[str, Any]:
         max_changed_files=payload["max_changed_files"],
     )
 
-    run = client.post("/jobs/run-next")
+    run = client.post(f"/jobs/{job_id}/run")
     record(
         results,
-        "run_next_manual",
+        "run_manual",
         run["status"] == "succeeded"
         and run["deployment_status"] == "ready: manual approval required"
         and run["tests_failed"] == [],
@@ -138,6 +138,48 @@ def run_smoke(base_url: str, repo_path: str) -> dict[str, Any]:
         "approve_deployment",
         approved["deployment_status"] == "deployed: local mock deployment recorded",
         deployment_status=approved["deployment_status"],
+    )
+
+    one_click = client.post(
+        "/run-code-job",
+        {
+            "prompt": "For my shopping website, create a buy button.",
+            "repo_path": repo_path,
+            "deploy_policy": "preview_only",
+            "max_changed_files": 2,
+            "token_budget": 2000,
+        },
+    )
+    one_click_job_id = one_click["job_id"]
+    evidence = one_click.get("evidence", {})
+    record(
+        results,
+        "run_code_job",
+        one_click["status"] == "succeeded"
+        and one_click["deployment_status"] == "ready: preview only"
+        and evidence.get("browser_checks", {}).get("buy_button_present") is True,
+        status=one_click["status"],
+        deployment_status=one_click["deployment_status"],
+        preview_url=evidence.get("preview_url"),
+    )
+
+    continuation = client.post(
+        f"/jobs/{one_click_job_id}/continue",
+        {
+            "prompt": "Make the buy button more prominent.",
+            "run_immediately": True,
+        },
+    )
+    continuation_payload = client.get(f"/jobs/{continuation['job_id']}/worker-payload")
+    record(
+        results,
+        "continue_job",
+        continuation["status"] == "succeeded"
+        and continuation_payload["parent_job_id"] == one_click_job_id
+        and continuation_payload["working_branch"] == f"agent/{one_click_job_id}",
+        status=continuation["status"],
+        parent_job_id=continuation_payload["parent_job_id"],
+        working_branch=continuation_payload["working_branch"],
     )
 
     tiny = client.post(

@@ -14,6 +14,8 @@ class ProjectArtifactTests(unittest.TestCase):
         self.assertEqual("demo-job-001", payload["job_payload"]["job_id"])
         self.assertEqual("succeeded", payload["final_result"]["status"])
         self.assertIn("policy_gate_results", payload["final_result"])
+        self.assertIn("evidence", payload["final_result"])
+        self.assertIn("github_repo", payload["job_payload"])
 
     def test_demo_local_flow_succeeds(self):
         result = subprocess.run(
@@ -27,6 +29,7 @@ class ProjectArtifactTests(unittest.TestCase):
 
         self.assertEqual("succeeded", payload["status"])
         self.assertEqual([], payload["tests_failed"])
+        self.assertTrue(payload["browser_checks"]["buy_button_present"])
         self.assertIn("job_succeeded", payload["events"])
 
     def test_evaluation_harness_scores_buy_button_task(self):
@@ -42,6 +45,7 @@ class ProjectArtifactTests(unittest.TestCase):
         self.assertEqual("shopping_buy_button", payload["task"])
         self.assertEqual(1.0, payload["score"])
         self.assertTrue(payload["checks"]["buy_button_present"])
+        self.assertTrue(payload["checks"]["preview_artifact_created"])
 
     def test_api_smoke_script_has_standard_entrypoint(self):
         script = ROOT / "scripts" / "smoke_api.py"

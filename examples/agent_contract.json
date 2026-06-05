@@ -4,8 +4,10 @@
     "user_id": "local-user",
     "repo_provider": "local",
     "repo_path": "/host_repo",
+    "github_repo": null,
     "base_branch": "main",
     "working_branch": "agent/demo-job-001",
+    "parent_job_id": null,
     "normalized_prompt": "For my shopping website, create a buy button.",
     "acceptance_criteria": [
       "Inspect the repository before editing.",
@@ -49,7 +51,8 @@
       "policy_gate_results": "dict[str, bool]",
       "pr_url": "str|null",
       "deployment_status": "str",
-      "residual_risks": "list[str]"
+      "residual_risks": "list[str]",
+      "evidence": "dict[str, object]"
     }
   },
   "budget_ledger_example": [
@@ -88,6 +91,30 @@
     },
     "pr_url": "local://github/pr/demo-job-001",
     "deployment_status": "ready: manual approval required",
-    "residual_risks": []
+    "residual_risks": [],
+    "evidence": {
+      "job_id": "demo-job-001",
+      "repo_provider": "local",
+      "repo_key": "local:/host_repo",
+      "github_repo": null,
+      "preview_url": "local://preview/demo-job-001/index.html",
+      "preview_artifact_path": "artifacts/previews/demo-job-001/index.html",
+      "browser_proof_path": "artifacts/previews/demo-job-001/browser-proof.json",
+      "browser_checks": {
+        "html_preview_available": true,
+        "buy_button_present": true
+      },
+      "repo_profile": {
+        "package_manager": null,
+        "framework": "html",
+        "detected_files": [
+          "index.html"
+        ],
+        "suggested_test_commands": [
+          "python3 -m compileall ."
+        ],
+        "risk_notes": []
+      }
+    }
   }
 }

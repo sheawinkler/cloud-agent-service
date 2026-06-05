@@ -1,15 +1,19 @@
-# Cloud Agent Service Local MVP
+# Cloud Agent Service MVP
 
-`cloud_agent_service` is a local-only implementation of the planned cloud coding-agent
-platform. It proves the application flow with deterministic local components:
+`cloud_agent_service` is an MVP implementation of the planned cloud coding-agent
+platform. It proves the application flow with deterministic local defaults:
 API intake, prompt validation, prompt upgrade, job state, queue/orchestration,
-agent execution, tests, policy gates, mock GitHub sync, and mock deployment.
+agent execution, tests, policy gates, preview proof, PR sync, and deployment
+policy handling.
 It also includes the cloud-ready operational boundaries needed before real
 AWS/GitHub rollout: durable queue claiming, worker payloads, budget ledger,
-event streaming, repo profiling, approval gates, retry, and evaluation.
+event streaming, repo profiling, repo memory, approval gates, continuation, and
+evaluation.
 
-It intentionally does not create AWS resources, push to GitHub, or perform a
-real deployment.
+Local repo jobs still use mock PR and deployment artifacts. GitHub repo jobs use
+a GitHub App path when credentials are configured: clone by installation token,
+push an agent branch, and create or reuse a pull request. The MVP does not
+create AWS resources or perform production deployment.
 
 ## App Flow
 
@@ -26,11 +30,12 @@ User Request
 | 4. Create job record    |
 | 5. Queue job            |
 | 6. Dispatch worker      |
-| 7. Copy workspace       |
+| 7. Copy/clone workspace |
 | 8. Analyze repo         |
 | 9. Apply agent edit     |
 | 10. Run tests + gates   |
-| 11. Mock PR + deploy    |
+| 11. Preview + proof     |
+| 12. PR sync + deploy    |
 +-------------------------+
     |
     v
@@ -50,8 +55,8 @@ Monitoring:
 
 - `app.py`: FastAPI surface for job creation, status, and health checks.
 - `pipeline.py`: request validation, prompt upgrade, planning, local repo copy,
-  deterministic edit, tests, policy gates, local GitHub sync mock, and local
-  deployment mock.
+  GitHub App clone/sync, deterministic edit, tests, policy gates, preview
+  artifacts, local GitHub sync mock, and local deployment mock.
 - `store.py`: SQLite job and event persistence.
 - `orchestrator.py`: local in-memory queue plus persisted queued-job runner.
 - `worker.py`: container-friendly single-job or claim-next entry point.
@@ -73,13 +78,14 @@ Monitoring:
 4. Create a durable job record.
 5. Queue and dispatch the job.
 6. Run the job through a container-compatible worker contract.
-7. Copy the target repo into an isolated workspace.
+7. Copy or clone the target repo into an isolated workspace.
 8. Analyze repo framework, package manager, and test hints.
 9. Execute a deterministic local coding action.
 10. Run tests and policy gates before sync/deploy.
 11. Track budget usage before each major stage.
-12. Return final status with events, changed files, checks, mock PR URL, and
-    mock deployment status.
+12. Publish a local preview artifact and browser-proof checks.
+13. Return final status with events, changed files, checks, evidence, PR URL,
+    and deployment status.
 
 ## Simple Demo
 
@@ -96,6 +102,7 @@ runs the full service pipeline, and prints a short proof summary. Look for:
 - `changed_files: index.html`
 - `tests_failed: 0`
 - `job_succeeded` in the event list
+- `preview_created` and `browser_proof_finished` in the event list
 
 For the full payload:
 
@@ -211,6 +218,60 @@ Check whether real GitHub App credentials are configured:
 curl -sS http://127.0.0.1:8000/integrations/github/status
 ```
 
+## GitHub App Jobs
+
+Set these environment variables in the API/worker runtime to enable real GitHub
+App sync:
+
+```bash
+export GITHUB_APP_ID=123456
+export GITHUB_APP_INSTALLATION_ID=987654
+export GITHUB_APP_PRIVATE_KEY="$(cat /path/to/private-key.pem)"
+```
+
+Optional:
+
+```bash
+export GITHUB_API_URL=https://api.github.com
+```
+
+Submit a GitHub-backed job:
+
+```bash
+curl -X POST http://127.0.0.1:8000/run-code-job \
+  -H 'content-type: application/json' \
+  -d '{
+    "prompt": "For my shopping website, create a buy button.",
+    "repo_provider": "github",
+    "github_repo": "owner/repo",
+    "base_branch": "main",
+    "deploy_policy": "pr_only"
+  }'
+```
+
+Continue from a prior job while preserving provider, target repo, base branch,
+and working branch lineage:
+
+```bash
+curl -X POST http://127.0.0.1:8000/jobs/<job_id>/continue \
+  -H 'content-type: application/json' \
+  -d '{"prompt": "Make the buy button more prominent."}'
+```
+
+GitHub App jobs are only live when `/integrations/github/status` reports
+`configured: true`. Without those credentials, the status endpoint is a readiness
+check, not proof of a successful GitHub clone, push, or PR.
+
+## Deployment Policies
+
+- `manual`: job succeeds, deployment waits for `/approve-deployment`.
+- `local`: write local mock deployment artifact after successful gates.
+- `never`: skip deployment.
+- `pr_only`: sync PR, skip deployment.
+- `preview_only`: publish preview/proof, skip deployment.
+- `staging_auto`: write local staging mock deployment artifact.
+- `production_approval`: job succeeds, deployment waits for approval.
+
 Monitor containers:
 
 ```bash
@@ -228,9 +289,12 @@ Artifacts include:
 
 - `jobs.sqlite3`: job and event state.
 - `budget_ledger`: token/runtime accounting table inside SQLite.
+- `repo_memory`: per-repo last-run profile and summary inside SQLite.
 - `workspaces/<job_id>/repo`: isolated copied repo workspace.
 - `artifacts/<job_id>-pr.json`: mock PR payload.
 - `artifacts/<job_id>-deployment.json`: mock deployment payload.
+- `artifacts/previews/<job_id>/index.html`: local preview copy when HTML exists.
+- `artifacts/previews/<job_id>/browser-proof.json`: browser-proof checks.
 
 ## Policy Gates
 
@@ -258,7 +322,8 @@ python3 scripts/evaluate_mvp.py
 ```
 
 The evaluator checks job success, visible button insertion, tests, policy gates,
-mock PR artifact, and mock deployment artifact.
+mock PR artifact, mock deployment artifact, preview artifact, and browser-proof
+checks.
 
 Run the live API smoke suite after starting Docker Compose:
 
@@ -267,9 +332,9 @@ docker --context orbstack compose -f compose.yaml up -d --build api
 python3 scripts/smoke_api.py --base-url http://127.0.0.1:8000 --repo-path /host_repo
 ```
 
-The API smoke covers health, GitHub integration status, worker payload, persisted
-queue claim, budget ledger, event list, SSE stream, manual deployment approval,
-and budget-stop failure.
+The API smoke covers health, GitHub integration status, worker payload, job run,
+budget ledger, event list, SSE stream, manual deployment approval, one-click
+run, continuation, and budget-stop failure.
 
 ## Evaluation And Contracts
 
@@ -297,15 +362,14 @@ and easier to audit.
 
 ## Current Boundary
 
-The MVP is deliberately local:
+The MVP is still cloud-ready rather than fully cloud-native:
 
-- local repo copy instead of GitHub clone
+- local repo copy by default; GitHub App clone/sync only when credentials exist
 - SQLite queued-job claim instead of SQS
 - local Docker/worker contract instead of ECS/Fargate
 - local SQLite instead of managed Postgres/DynamoDB
-- local mock PR artifact instead of GitHub PR
+- local mock PR artifact for local jobs; real GitHub PR path for GitHub jobs
 - local mock deployment artifact instead of AWS deploy
-- GitHub App status detection instead of token minting/PR creation
 
 That keeps the full flow testable before replacing each local component with a
 cloud-backed implementation.

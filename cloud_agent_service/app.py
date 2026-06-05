@@ -11,7 +11,7 @@ from fastapi import BackgroundTasks, FastAPI, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
-from cloud_agent_service.models import DeploymentPolicy, JobRequest
+from cloud_agent_service.models import DeploymentPolicy, JobRequest, RepoProvider
 from cloud_agent_service.orchestrator import LocalJobQueue, LocalOrchestrator
 from cloud_agent_service.pipeline import AgentCloudFlow, RequestValidationError
 from cloud_agent_service.store import JobStore
@@ -19,7 +19,10 @@ from cloud_agent_service.store import JobStore
 
 class CreateJobPayload(BaseModel):
     prompt: str = Field(min_length=1)
-    repo_path: str
+    repo_path: str = ""
+    repo_provider: RepoProvider = RepoProvider.LOCAL
+    github_repo: str | None = None
+    parent_job_id: str | None = None
     user_id: str = "local-user"
     base_branch: str = "main"
     deploy_policy: DeploymentPolicy = DeploymentPolicy.MANUAL
@@ -58,17 +61,7 @@ def github_status() -> dict[str, Any]:
 
 @app.post("/jobs")
 def create_job(payload: CreateJobPayload, background_tasks: BackgroundTasks) -> dict[str, Any]:
-    request = JobRequest(
-        prompt=payload.prompt,
-        repo_path=payload.repo_path,
-        user_id=payload.user_id,
-        base_branch=payload.base_branch,
-        deploy_policy=payload.deploy_policy,
-        token_budget=payload.token_budget,
-        max_prompt_chars=payload.max_prompt_chars,
-        max_runtime_seconds=payload.max_runtime_seconds,
-        max_changed_files=payload.max_changed_files,
-    )
+    request = _job_request_from_payload(payload)
     try:
         job_id = flow.create_job(request)
     except RequestValidationError as exc:
@@ -79,6 +72,17 @@ def create_job(payload: CreateJobPayload, background_tasks: BackgroundTasks) -> 
         background_tasks.add_task(orchestrator.run_queued_once)
 
     return {"job_id": job_id, "status": "queued"}
+
+
+@app.post("/run-code-job")
+def run_code_job(payload: CreateJobPayload) -> dict[str, Any]:
+    request = _job_request_from_payload(payload)
+    try:
+        job_id = flow.create_job(request)
+        result = flow.run_job(job_id)
+    except RequestValidationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return asdict(result)
 
 
 @app.get("/jobs")
@@ -133,6 +137,66 @@ def retry_job(job_id: str) -> dict[str, Any]:
         raise HTTPException(status_code=409, detail="only failed or cancelled jobs can be retried")
     orchestrator.submit(job_id)
     return {"job_id": job_id, "status": "queued"}
+
+
+class ContinueJobPayload(BaseModel):
+    prompt: str = Field(min_length=1)
+    token_budget: int | None = None
+    run_immediately: bool = True
+
+
+@app.post("/jobs/{job_id}/continue")
+def continue_job(
+    job_id: str,
+    payload: ContinueJobPayload,
+    background_tasks: BackgroundTasks,
+) -> dict[str, Any]:
+    parent = flow.store.get_job(job_id)
+    if not parent:
+        raise HTTPException(status_code=404, detail="job not found")
+    request = JobRequest(
+        prompt=payload.prompt,
+        repo_path=parent["repo_path"],
+        repo_provider=RepoProvider(parent["repo_provider"]),
+        github_repo=parent["github_repo"],
+        parent_job_id=job_id,
+        user_id=parent["user_id"],
+        base_branch=parent["base_branch"],
+        deploy_policy=DeploymentPolicy(parent["deploy_policy"]),
+        token_budget=payload.token_budget or parent["token_budget"],
+        max_changed_files=parent["max_changed_files"],
+        max_runtime_seconds=parent["max_runtime_seconds"],
+        max_prompt_chars=parent["max_prompt_chars"],
+    )
+    try:
+        child_job_id = flow.create_job(request)
+    except RequestValidationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if payload.run_immediately:
+        result = flow.run_job(child_job_id)
+        response = asdict(result)
+        response["parent_job_id"] = job_id
+        return response
+    orchestrator.submit(child_job_id)
+    background_tasks.add_task(orchestrator.run_queued_once)
+    return {"job_id": child_job_id, "parent_job_id": job_id, "status": "queued"}
+
+
+def _job_request_from_payload(payload: CreateJobPayload) -> JobRequest:
+    return JobRequest(
+        prompt=payload.prompt,
+        repo_path=payload.repo_path,
+        repo_provider=payload.repo_provider,
+        github_repo=payload.github_repo,
+        parent_job_id=payload.parent_job_id,
+        user_id=payload.user_id,
+        base_branch=payload.base_branch,
+        deploy_policy=payload.deploy_policy,
+        token_budget=payload.token_budget,
+        max_prompt_chars=payload.max_prompt_chars,
+        max_runtime_seconds=payload.max_runtime_seconds,
+        max_changed_files=payload.max_changed_files,
+    )
 
 
 @app.post("/jobs/{job_id}/approve-deployment")

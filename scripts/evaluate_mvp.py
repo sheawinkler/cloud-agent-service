@@ -51,6 +51,15 @@ def evaluate_buy_button() -> dict[str, object]:
             "deployment_artifact_created": (
                 root / "artifacts" / f"{job_id}-deployment.json"
             ).exists(),
+            "preview_artifact_created": (
+                root / "artifacts" / "previews" / job_id / "index.html"
+            ).exists(),
+            "browser_proof_created": (
+                root / "artifacts" / "previews" / job_id / "browser-proof.json"
+            ).exists(),
+            "browser_buy_button_check": result.evidence.get("browser_checks", {}).get(
+                "buy_button_present", False
+            ),
         }
         score = sum(1 for value in checks.values() if value) / len(checks)
         return {

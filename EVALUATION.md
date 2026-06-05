@@ -16,7 +16,10 @@ the deploy boundary when evidence is weak.
 | Auditability | The job can be reconstructed from events. | SQLite events show each major transition. |
 | Budget control | Work stops before spend exceeds policy. | Budget ledger records each stage and tiny budgets fail before sync. |
 | Repo intelligence | The service knows what kind of repo it is editing. | `repo_analyzed` records framework, package manager, and test hints. |
+| Repo memory | Follow-up jobs can reuse prior repo context. | `repo_memory_loaded` is emitted and `repo_memory` records the last profile. |
 | Safety | Failed tests or policies stop sync/deploy. | Gate failure returns `failed` before mock PR/deploy. |
+| Preview proof | Reviewers get inspectable evidence before deploy. | Final result includes preview URL, preview artifact, and browser-proof checks. |
+| GitHub sync | GitHub jobs can use app-scoped credentials instead of user tokens. | Configured GitHub App jobs clone, push a branch, and create or reuse a PR. |
 | Approval gates | Deployment does not happen without policy approval. | Manual jobs return `ready` until approved. |
 | Operator UX | A reviewer can see what happened quickly. | Final result includes changed files, commands, gates, and risks. |
 | Cloud readiness | Local parts map cleanly to managed services. | Queue, worker, store, sync, and deploy are separate seams. |
@@ -29,6 +32,8 @@ the deploy boundary when evidence is weak.
 - Test pass rate by repo type.
 - Policy gate failure rate by gate.
 - Jobs stopped before deploy due to validation.
+- Preview proof pass rate.
+- GitHub App sync success rate.
 - Average changed files per job.
 - Average token budget requested per job.
 - Token budget consumed per stage.
@@ -72,6 +77,23 @@ the deploy boundary when evidence is weak.
    - Run `python3 scripts/evaluate_mvp.py`.
    - Expected: score is `1.0` for the buy-button task.
 
+9. GitHub App readiness
+   - Configure `GITHUB_APP_ID`, `GITHUB_APP_INSTALLATION_ID`, and
+     `GITHUB_APP_PRIVATE_KEY`, then submit `repo_provider=github`.
+   - Expected: status reports configured, the repo is cloned by installation
+     token, an agent branch is pushed, and a PR URL is returned.
+
+10. Conversation continuation
+    - Run `/jobs/<job_id>/continue` after a completed or failed job.
+    - Expected: the child job records `parent_job_id`, reuses the same provider
+      and branch lineage, and emits its own evidence.
+
+11. Deployment policy matrix
+    - Submit equivalent jobs with `manual`, `local`, `never`, `pr_only`,
+      `preview_only`, `staging_auto`, and `production_approval`.
+    - Expected: each policy returns the documented deploy status and only writes
+      deployment artifacts for deploy-capable local policies.
+
 ## Evidence To Show In A Demo
 
 The demo should make these proof points visible without much narration:
@@ -83,17 +105,21 @@ agent_dispatched
 budget_charged
 repo_cloned
 repo_analyzed
+repo_memory_loaded
 prompt_upgraded
 plan_created
 dependencies_requested
 files_changed
 tests_finished
 policy_gate_result
+preview_created
+browser_proof_finished
 pr_created_or_updated
 deployment_finished
 job_succeeded
 ```
 
-The service should be considered not production-ready until real GitHub sync,
-real deployment integration, auth, multi-tenant quotas, and durable cloud
-storage replace the local mocks.
+The service should be considered not production-ready until real deployment
+integration, auth, multi-tenant quotas, durable cloud storage, and ECS/Fargate
+worker dispatch replace the local defaults. Real GitHub sync is implemented only
+for `repo_provider=github` when app credentials are configured and verified.
