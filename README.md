@@ -260,6 +260,17 @@ python3 scripts/evaluate_mvp.py
 The evaluator checks job success, visible button insertion, tests, policy gates,
 mock PR artifact, and mock deployment artifact.
 
+Run the live API smoke suite after starting Docker Compose:
+
+```bash
+docker --context orbstack compose -f compose.yaml up -d --build api
+python3 scripts/smoke_api.py --base-url http://127.0.0.1:8000 --repo-path /host_repo
+```
+
+The API smoke covers health, GitHub integration status, worker payload, persisted
+queue claim, budget ledger, event list, SSE stream, manual deployment approval,
+and budget-stop failure.
+
 ## Evaluation And Contracts
 
 - `EVALUATION.md`: how to judge the service as an agent control loop.

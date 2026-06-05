@@ -28,6 +28,7 @@ GitHub, or deploying real infrastructure.
 - `demo.sh`: one-command local demo.
 - `scripts/demo_local_flow.py`: standard-library demo path for the happy flow.
 - `scripts/evaluate_mvp.py`: golden buy-button task evaluator.
+- `scripts/smoke_api.py`: standard-library smoke suite for the live API.
 - `EVALUATION.md`: criteria for judging product and operational readiness.
 - `examples/agent_contract.json`: example job payload and final result contract.
 
@@ -38,6 +39,7 @@ Compile and smoke-check the Python code:
 ```bash
 python3 -m compileall cloud_agent_service scripts tests
 ./demo.sh
+python3 scripts/evaluate_mvp.py
 python3 -m unittest tests.test_cloud_agent_service_flow
 python3 -m unittest discover -s tests
 ```

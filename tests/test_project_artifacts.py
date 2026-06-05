@@ -43,6 +43,13 @@ class ProjectArtifactTests(unittest.TestCase):
         self.assertEqual(1.0, payload["score"])
         self.assertTrue(payload["checks"]["buy_button_present"])
 
+    def test_api_smoke_script_has_standard_entrypoint(self):
+        script = ROOT / "scripts" / "smoke_api.py"
+        content = script.read_text(encoding="utf-8")
+
+        self.assertIn("def run_smoke", content)
+        self.assertIn("if __name__ == \"__main__\"", content)
+
 
 if __name__ == "__main__":
     unittest.main()
