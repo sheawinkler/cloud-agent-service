@@ -31,7 +31,7 @@ class LocalOrchestrator:
     def run_queued_once(self) -> JobResult | None:
         job_id = self.job_queue.dequeue()
         if not job_id:
-            return None
+            return self.flow.run_next_queued_job()
         try:
             return self.flow.run_job(job_id)
         except Exception:

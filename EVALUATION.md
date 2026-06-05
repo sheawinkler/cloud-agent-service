@@ -14,7 +14,10 @@ the deploy boundary when evidence is weak.
 | Isolation | Each job gets its own workspace. | Workspace lives under `workspaces/<job_id>/repo`. |
 | Determinism | Checks and gates are repeatable. | `python3 -m compileall .` is run for every job. |
 | Auditability | The job can be reconstructed from events. | SQLite events show each major transition. |
+| Budget control | Work stops before spend exceeds policy. | Budget ledger records each stage and tiny budgets fail before sync. |
+| Repo intelligence | The service knows what kind of repo it is editing. | `repo_analyzed` records framework, package manager, and test hints. |
 | Safety | Failed tests or policies stop sync/deploy. | Gate failure returns `failed` before mock PR/deploy. |
+| Approval gates | Deployment does not happen without policy approval. | Manual jobs return `ready` until approved. |
 | Operator UX | A reviewer can see what happened quickly. | Final result includes changed files, commands, gates, and risks. |
 | Cloud readiness | Local parts map cleanly to managed services. | Queue, worker, store, sync, and deploy are separate seams. |
 
@@ -28,8 +31,10 @@ the deploy boundary when evidence is weak.
 - Jobs stopped before deploy due to validation.
 - Average changed files per job.
 - Average token budget requested per job.
+- Token budget consumed per stage.
 - Cost per successful job.
 - Jobs requiring human approval.
+- Jobs retried after failure or cancellation.
 
 ## Evaluation Scenarios
 
@@ -54,6 +59,19 @@ the deploy boundary when evidence is weak.
    - Restart the API after a completed job.
    - Expected: job state and event history remain readable from SQLite.
 
+6. Budget stop
+   - Submit a valid request with a token budget below the first-stage estimate.
+   - Expected: job fails with `not deployed: budget exceeded`, with no PR/deploy.
+
+7. Manual approval
+   - Submit a valid request with `deploy_policy=manual`.
+   - Expected: job succeeds with `ready: manual approval required`; deployment
+     artifact appears only after `/approve-deployment`.
+
+8. Golden task score
+   - Run `python3 scripts/evaluate_mvp.py`.
+   - Expected: score is `1.0` for the buy-button task.
+
 ## Evidence To Show In A Demo
 
 The demo should make these proof points visible without much narration:
@@ -62,7 +80,9 @@ The demo should make these proof points visible without much narration:
 job_created
 job_queued
 agent_dispatched
+budget_charged
 repo_cloned
+repo_analyzed
 prompt_upgraded
 plan_created
 dependencies_requested
@@ -77,4 +97,3 @@ job_succeeded
 The service should be considered not production-ready until real GitHub sync,
 real deployment integration, auth, multi-tenant quotas, and durable cloud
 storage replace the local mocks.
-

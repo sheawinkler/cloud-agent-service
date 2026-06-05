@@ -39,8 +39,31 @@
     "max_runtime_seconds": 600,
     "max_changed_files": 12,
     "deployment_policy": "manual",
-    "status_callback_url": "http://api/jobs/demo-job-001"
+    "status_callback_url": "local://jobs/demo-job-001",
+    "output_schema": {
+      "changed_files": "list[str]",
+      "commands_run": "list[str]",
+      "tests_passed": "list[str]",
+      "tests_failed": "list[str]",
+      "dependency_changes": "list[str]",
+      "policy_gate_results": "dict[str, bool]",
+      "pr_url": "str|null",
+      "deployment_status": "str",
+      "residual_risks": "list[str]"
+    }
   },
+  "budget_ledger_example": [
+    {
+      "stage": "dispatch",
+      "token_delta": 64,
+      "tokens_used": 64
+    },
+    {
+      "stage": "repo_analysis",
+      "token_delta": 128,
+      "tokens_used": 192
+    }
+  ],
   "final_result": {
     "job_id": "demo-job-001",
     "status": "succeeded",
@@ -59,6 +82,7 @@
       "repo_tests": true,
       "secret_scan": true,
       "diff_policy": true,
+      "protected_path_policy": true,
       "dependency_policy": true,
       "deployment_policy": true
     },
@@ -67,4 +91,3 @@
     "residual_risks": []
   }
 }
-

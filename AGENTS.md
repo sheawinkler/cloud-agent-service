@@ -18,14 +18,16 @@ GitHub, or deploying real infrastructure.
 
 - `app.py`: FastAPI surface for job creation, status, and health.
 - `pipeline.py`: request validation, prompt upgrade, planning, local workspace
-  copy, deterministic coding action, tests, gates, mock PR sync, and mock deploy.
+  copy, repo profiling, budget charging, deterministic coding action, tests,
+  gates, mock PR sync, and mock deploy.
 - `store.py`: SQLite job and event persistence.
-- `orchestrator.py`: local queue and one-job runner.
-- `worker.py`: container-friendly one-job entry point.
+- `orchestrator.py`: local queue plus persisted queued-job runner.
+- `worker.py`: container-friendly one-job or claim-next entry point.
 - `compose.yaml`: local Docker Compose wiring.
 - `scripts/install_allowed_modules.sh`: dependency allowlist installer.
 - `demo.sh`: one-command local demo.
 - `scripts/demo_local_flow.py`: standard-library demo path for the happy flow.
+- `scripts/evaluate_mvp.py`: golden buy-button task evaluator.
 - `EVALUATION.md`: criteria for judging product and operational readiness.
 - `examples/agent_contract.json`: example job payload and final result contract.
 
@@ -65,6 +67,10 @@ Monitor the API:
 docker --context orbstack compose -f compose.yaml ps
 docker --context orbstack compose -f compose.yaml logs --tail=120 api
 curl -sS http://127.0.0.1:8000/jobs/<job_id>
+curl -sS http://127.0.0.1:8000/jobs/<job_id>/worker-payload
+curl -sS http://127.0.0.1:8000/jobs/<job_id>/budget
+curl -sS http://127.0.0.1:8000/jobs/<job_id>/events
+python -m cloud_agent_service.worker --claim-next
 ```
 
 Stop the local stack:
@@ -80,17 +86,19 @@ A successful local run should emit these core events:
 1. `job_created`
 2. `job_queued`
 3. `agent_dispatched`
-4. `repo_cloned`
-5. `prompt_upgraded`
-6. `plan_created`
-7. `dependencies_requested`
-8. `files_changed`
-9. `tests_finished`
-10. `policy_gate_result`
-11. `branch_pushed`
-12. `pr_created_or_updated`
-13. `deployment_finished`
-14. `job_succeeded`
+4. `budget_charged`
+5. `repo_cloned`
+6. `repo_analyzed`
+7. `prompt_upgraded`
+8. `plan_created`
+9. `dependencies_requested`
+10. `files_changed`
+11. `tests_finished`
+12. `policy_gate_result`
+13. `branch_pushed`
+14. `pr_created_or_updated`
+15. `deployment_finished`
+16. `job_succeeded`
 
 If a gate fails, the job must stop before mock PR sync or mock deployment.
 

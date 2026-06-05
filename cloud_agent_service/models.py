@@ -15,6 +15,8 @@ class JobStatus(StrEnum):
     DEPLOYING = "deploying"
     SUCCEEDED = "succeeded"
     FAILED = "failed"
+    CANCELLED = "cancelled"
+    NEEDS_USER_INPUT = "needs_user_input"
 
 
 class RiskLevel(StrEnum):
@@ -82,3 +84,40 @@ class JobResult:
     deployment_status: str
     residual_risks: list[str]
     events: list[dict[str, Any]]
+
+
+@dataclass
+class WorkerJobPayload:
+    job_id: str
+    user_id: str
+    repo_provider: str
+    repo_path: str
+    base_branch: str
+    working_branch: str
+    normalized_prompt: str
+    acceptance_criteria: list[str]
+    allowed_python_modules: list[str]
+    allowed_shell_commands: list[str]
+    token_budget: int
+    max_runtime_seconds: int
+    max_changed_files: int
+    deployment_policy: DeploymentPolicy
+    status_callback_url: str
+    output_schema: dict[str, Any]
+
+
+@dataclass
+class RepoProfile:
+    package_manager: str | None
+    framework: str | None
+    detected_files: list[str]
+    suggested_test_commands: list[str]
+    risk_notes: list[str] = field(default_factory=list)
+
+
+@dataclass
+class GitHubIntegrationStatus:
+    configured: bool
+    provider: str
+    missing: list[str]
+    mode: str

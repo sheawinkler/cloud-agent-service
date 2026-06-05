@@ -4,6 +4,9 @@
 platform. It proves the application flow with deterministic local components:
 API intake, prompt validation, prompt upgrade, job state, queue/orchestration,
 agent execution, tests, policy gates, mock GitHub sync, and mock deployment.
+It also includes the cloud-ready operational boundaries needed before real
+AWS/GitHub rollout: durable queue claiming, worker payloads, budget ledger,
+event streaming, repo profiling, approval gates, retry, and evaluation.
 
 It intentionally does not create AWS resources, push to GitHub, or perform a
 real deployment.
@@ -24,9 +27,10 @@ User Request
 | 5. Queue job            |
 | 6. Dispatch worker      |
 | 7. Copy workspace       |
-| 8. Apply agent edit     |
-| 9. Run tests + gates    |
-| 10. Mock PR + deploy    |
+| 8. Analyze repo         |
+| 9. Apply agent edit     |
+| 10. Run tests + gates   |
+| 11. Mock PR + deploy    |
 +-------------------------+
     |
     v
@@ -49,8 +53,8 @@ Monitoring:
   deterministic edit, tests, policy gates, local GitHub sync mock, and local
   deployment mock.
 - `store.py`: SQLite job and event persistence.
-- `orchestrator.py`: local queue and one-job runner.
-- `worker.py`: container-friendly single-job entry point.
+- `orchestrator.py`: local in-memory queue plus persisted queued-job runner.
+- `worker.py`: container-friendly single-job or claim-next entry point.
 - `Dockerfile.api`: API container.
 - `Dockerfile.agent`: worker container.
 - `compose.yaml`: local API/worker build configuration.
@@ -70,9 +74,11 @@ Monitoring:
 5. Queue and dispatch the job.
 6. Run the job through a container-compatible worker contract.
 7. Copy the target repo into an isolated workspace.
-8. Execute a deterministic local coding action.
-9. Run tests and policy gates before sync/deploy.
-10. Return final status with events, changed files, checks, mock PR URL, and
+8. Analyze repo framework, package manager, and test hints.
+9. Execute a deterministic local coding action.
+10. Run tests and policy gates before sync/deploy.
+11. Track budget usage before each major stage.
+12. Return final status with events, changed files, checks, mock PR URL, and
     mock deployment status.
 
 ## Simple Demo
@@ -150,6 +156,61 @@ Fetch status:
 curl -sS http://127.0.0.1:8000/jobs/<job_id>
 ```
 
+List recent jobs:
+
+```bash
+curl -sS http://127.0.0.1:8000/jobs
+```
+
+Inspect the worker payload that would be handed to an ECS/Fargate task:
+
+```bash
+curl -sS http://127.0.0.1:8000/jobs/<job_id>/worker-payload
+```
+
+Run the next persisted queued job without relying on the API process memory:
+
+```bash
+python -m cloud_agent_service.worker --claim-next
+```
+
+Read budget ledger:
+
+```bash
+curl -sS http://127.0.0.1:8000/jobs/<job_id>/budget
+```
+
+Read or stream job events:
+
+```bash
+curl -sS http://127.0.0.1:8000/jobs/<job_id>/events
+curl -N http://127.0.0.1:8000/jobs/<job_id>/events/stream
+```
+
+Cancel a queued job before dispatch:
+
+```bash
+curl -X POST http://127.0.0.1:8000/jobs/<job_id>/cancel
+```
+
+Retry a failed or cancelled job:
+
+```bash
+curl -X POST http://127.0.0.1:8000/jobs/<job_id>/retry
+```
+
+Approve a manual deployment after job success:
+
+```bash
+curl -X POST http://127.0.0.1:8000/jobs/<job_id>/approve-deployment
+```
+
+Check whether real GitHub App credentials are configured:
+
+```bash
+curl -sS http://127.0.0.1:8000/integrations/github/status
+```
+
 Monitor containers:
 
 ```bash
@@ -166,6 +227,7 @@ should not be committed.
 Artifacts include:
 
 - `jobs.sqlite3`: job and event state.
+- `budget_ledger`: token/runtime accounting table inside SQLite.
 - `workspaces/<job_id>/repo`: isolated copied repo workspace.
 - `artifacts/<job_id>-pr.json`: mock PR payload.
 - `artifacts/<job_id>-deployment.json`: mock deployment payload.
@@ -177,10 +239,26 @@ A job must pass all gates before mock PR sync and mock deployment:
 - repo tests pass
 - secret scan passes
 - diff size policy passes
+- protected path policy passes
 - dependency policy passes
 - deployment policy passes
 
 If a gate fails, the job stops and reports `failed`.
+
+Protected paths include secrets, GitHub workflows, Docker/Compose files, and
+Terraform files. Dependency manifest/lockfile changes are blocked in this local
+MVP unless that policy is relaxed in code.
+
+## Evaluation Harness
+
+Run the golden buy-button task and emit a score:
+
+```bash
+python3 scripts/evaluate_mvp.py
+```
+
+The evaluator checks job success, visible button insertion, tests, policy gates,
+mock PR artifact, and mock deployment artifact.
 
 ## Evaluation And Contracts
 
@@ -211,11 +289,12 @@ and easier to audit.
 The MVP is deliberately local:
 
 - local repo copy instead of GitHub clone
-- local queue instead of SQS
-- local Docker contract instead of ECS/Fargate
+- SQLite queued-job claim instead of SQS
+- local Docker/worker contract instead of ECS/Fargate
 - local SQLite instead of managed Postgres/DynamoDB
 - local mock PR artifact instead of GitHub PR
 - local mock deployment artifact instead of AWS deploy
+- GitHub App status detection instead of token minting/PR creation
 
 That keeps the full flow testable before replacing each local component with a
 cloud-backed implementation.

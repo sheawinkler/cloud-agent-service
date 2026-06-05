@@ -29,6 +29,20 @@ class ProjectArtifactTests(unittest.TestCase):
         self.assertEqual([], payload["tests_failed"])
         self.assertIn("job_succeeded", payload["events"])
 
+    def test_evaluation_harness_scores_buy_button_task(self):
+        result = subprocess.run(
+            ["python3", "scripts/evaluate_mvp.py"],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        payload = json.loads(result.stdout)
+
+        self.assertEqual("shopping_buy_button", payload["task"])
+        self.assertEqual(1.0, payload["score"])
+        self.assertTrue(payload["checks"]["buy_button_present"])
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import json
 import os
+import time
 from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
 from fastapi import BackgroundTasks, FastAPI, HTTPException
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from cloud_agent_service.models import DeploymentPolicy, JobRequest
@@ -48,6 +51,11 @@ def health() -> dict[str, str]:
     return {"status": "ok"}
 
 
+@app.get("/integrations/github/status")
+def github_status() -> dict[str, Any]:
+    return asdict(flow.github_status())
+
+
 @app.post("/jobs")
 def create_job(payload: CreateJobPayload, background_tasks: BackgroundTasks) -> dict[str, Any]:
     request = JobRequest(
@@ -73,6 +81,19 @@ def create_job(payload: CreateJobPayload, background_tasks: BackgroundTasks) -> 
     return {"job_id": job_id, "status": "queued"}
 
 
+@app.get("/jobs")
+def list_jobs(limit: int = 50, user_id: str | None = None) -> dict[str, Any]:
+    return {"jobs": flow.store.list_jobs(limit=limit, user_id=user_id)}
+
+
+@app.post("/jobs/run-next")
+def run_next_job() -> dict[str, Any]:
+    result = flow.run_next_queued_job()
+    if result is None:
+        return {"status": "idle"}
+    return asdict(result)
+
+
 @app.post("/jobs/{job_id}/run")
 def run_job(job_id: str) -> dict[str, Any]:
     job = flow.store.get_job(job_id)
@@ -80,6 +101,96 @@ def run_job(job_id: str) -> dict[str, Any]:
         raise HTTPException(status_code=404, detail="job not found")
     result = flow.run_job(job_id)
     return asdict(result)
+
+
+@app.get("/jobs/{job_id}/worker-payload")
+def get_worker_payload(job_id: str) -> dict[str, Any]:
+    try:
+        payload = flow.build_worker_payload(job_id, status_callback_url="local://jobs")
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="job not found") from exc
+    return asdict(payload)
+
+
+@app.post("/jobs/{job_id}/cancel")
+def cancel_job(job_id: str) -> dict[str, Any]:
+    try:
+        cancelled = flow.cancel_job(job_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="job not found") from exc
+    if not cancelled:
+        raise HTTPException(status_code=409, detail="job is already running or finished")
+    return {"job_id": job_id, "status": "cancelled"}
+
+
+@app.post("/jobs/{job_id}/retry")
+def retry_job(job_id: str) -> dict[str, Any]:
+    try:
+        retried = flow.retry_job(job_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="job not found") from exc
+    if not retried:
+        raise HTTPException(status_code=409, detail="only failed or cancelled jobs can be retried")
+    orchestrator.submit(job_id)
+    return {"job_id": job_id, "status": "queued"}
+
+
+@app.post("/jobs/{job_id}/approve-deployment")
+def approve_deployment(job_id: str) -> dict[str, Any]:
+    try:
+        result = flow.approve_deployment(job_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="job not found") from exc
+    except RequestValidationError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return asdict(result)
+
+
+@app.get("/jobs/{job_id}/budget")
+def get_budget(job_id: str) -> dict[str, Any]:
+    job = flow.store.get_job(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="job not found")
+    entries = flow.store.list_budget_entries(job_id)
+    return {
+        "job_id": job_id,
+        "token_budget": job["token_budget"],
+        "tokens_used": flow.store.budget_tokens_used(job_id),
+        "entries": entries,
+    }
+
+
+@app.get("/jobs/{job_id}/events")
+def get_job_events(job_id: str, after_id: int = 0) -> dict[str, Any]:
+    job = flow.store.get_job(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="job not found")
+    return {"events": flow.store.list_events_after(job_id, after_id)}
+
+
+@app.get("/jobs/{job_id}/events/stream")
+def stream_job_events(
+    job_id: str,
+    after_id: int = 0,
+    timeout_seconds: int = 30,
+) -> StreamingResponse:
+    if not flow.store.get_job(job_id):
+        raise HTTPException(status_code=404, detail="job not found")
+
+    def event_stream():
+        last_id = after_id
+        deadline = time.monotonic() + max(1, min(timeout_seconds, 120))
+        while time.monotonic() < deadline:
+            events = flow.store.list_events_after(job_id, last_id)
+            for event in events:
+                last_id = event["id"]
+                yield f"data: {json.dumps(event, sort_keys=True)}\n\n"
+            job = flow.store.get_job(job_id)
+            if job and job["status"] in {"succeeded", "failed", "cancelled"}:
+                break
+            time.sleep(0.25)
+
+    return StreamingResponse(event_stream(), media_type="text/event-stream")
 
 
 @app.get("/jobs/{job_id}")

@@ -40,6 +40,9 @@ class JobStore:
                         base_branch TEXT NOT NULL,
                         deploy_policy TEXT NOT NULL,
                         token_budget INTEGER NOT NULL,
+                        max_prompt_chars INTEGER NOT NULL DEFAULT 8000,
+                        max_runtime_seconds INTEGER NOT NULL DEFAULT 600,
+                        max_changed_files INTEGER NOT NULL DEFAULT 12,
                         status TEXT NOT NULL,
                         result_json TEXT NOT NULL DEFAULT '{}',
                         created_at TEXT NOT NULL,
@@ -59,6 +62,35 @@ class JobStore:
                     )
                     """
                 )
+                conn.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS budget_ledger (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        job_id TEXT NOT NULL,
+                        stage TEXT NOT NULL,
+                        token_delta INTEGER NOT NULL,
+                        runtime_seconds REAL NOT NULL DEFAULT 0,
+                        note TEXT NOT NULL DEFAULT '',
+                        created_at TEXT NOT NULL,
+                        FOREIGN KEY(job_id) REFERENCES jobs(job_id)
+                    )
+                    """
+                )
+                self._ensure_job_columns(conn)
+
+    def _ensure_job_columns(self, conn: sqlite3.Connection) -> None:
+        columns = {
+            row["name"]
+            for row in conn.execute("PRAGMA table_info(jobs)").fetchall()
+        }
+        additions = {
+            "max_prompt_chars": "INTEGER NOT NULL DEFAULT 8000",
+            "max_runtime_seconds": "INTEGER NOT NULL DEFAULT 600",
+            "max_changed_files": "INTEGER NOT NULL DEFAULT 12",
+        }
+        for name, definition in additions.items():
+            if name not in columns:
+                conn.execute(f"ALTER TABLE jobs ADD COLUMN {name} {definition}")
 
     def create_job(self, job: dict[str, Any]) -> None:
         now = utc_now()
@@ -68,9 +100,11 @@ class JobStore:
                     """
                     INSERT INTO jobs (
                         job_id, user_id, prompt, repo_path, base_branch,
-                        deploy_policy, token_budget, status, created_at, updated_at
+                        deploy_policy, token_budget, max_prompt_chars,
+                        max_runtime_seconds, max_changed_files, status,
+                        created_at, updated_at
                     )
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         job["job_id"],
@@ -80,6 +114,9 @@ class JobStore:
                         job["base_branch"],
                         job["deploy_policy"],
                         job["token_budget"],
+                        job["max_prompt_chars"],
+                        job["max_runtime_seconds"],
+                        job["max_changed_files"],
                         JobStatus.CREATED.value,
                         now,
                         now,
@@ -113,16 +150,113 @@ class JobStore:
                     (job_id, event_type, json.dumps(payload or {}, sort_keys=True), utc_now()),
                 )
 
+    def add_budget_entry(
+        self,
+        job_id: str,
+        stage: str,
+        token_delta: int,
+        runtime_seconds: float = 0,
+        note: str = "",
+    ) -> None:
+        with closing(self._connect()) as conn:
+            with conn:
+                conn.execute(
+                    """
+                    INSERT INTO budget_ledger (
+                        job_id, stage, token_delta, runtime_seconds, note, created_at
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?)
+                    """,
+                    (job_id, stage, token_delta, runtime_seconds, note, utc_now()),
+                )
+
     def get_job(self, job_id: str) -> dict[str, Any] | None:
         with closing(self._connect()) as conn:
             row = conn.execute("SELECT * FROM jobs WHERE job_id = ?", (job_id,)).fetchone()
         return self._row_to_dict(row) if row else None
 
+    def list_jobs(self, limit: int = 50, user_id: str | None = None) -> list[dict[str, Any]]:
+        limit = max(1, min(limit, 200))
+        query = "SELECT * FROM jobs"
+        params: list[Any] = []
+        if user_id:
+            query += " WHERE user_id = ?"
+            params.append(user_id)
+        query += " ORDER BY created_at DESC LIMIT ?"
+        params.append(limit)
+        with closing(self._connect()) as conn:
+            rows = conn.execute(query, params).fetchall()
+        return [self._row_to_dict(row) for row in rows]
+
+    def list_budget_entries(self, job_id: str) -> list[dict[str, Any]]:
+        with closing(self._connect()) as conn:
+            rows = conn.execute(
+                """
+                SELECT id, stage, token_delta, runtime_seconds, note, created_at
+                FROM budget_ledger
+                WHERE job_id = ?
+                ORDER BY id
+                """,
+                (job_id,),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def budget_tokens_used(self, job_id: str) -> int:
+        with closing(self._connect()) as conn:
+            row = conn.execute(
+                """
+                SELECT COALESCE(SUM(token_delta), 0) AS tokens_used
+                FROM budget_ledger
+                WHERE job_id = ?
+                """,
+                (job_id,),
+            ).fetchone()
+        return int(row["tokens_used"])
+
+    def claim_next_queued_job(self) -> str | None:
+        with closing(self._connect()) as conn:
+            conn.isolation_level = None
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                row = conn.execute(
+                    """
+                    SELECT job_id
+                    FROM jobs
+                    WHERE status = ?
+                    ORDER BY created_at
+                    LIMIT 1
+                    """,
+                    (JobStatus.QUEUED.value,),
+                ).fetchone()
+                if not row:
+                    conn.execute("COMMIT")
+                    return None
+
+                job_id = row["job_id"]
+                cursor = conn.execute(
+                    """
+                    UPDATE jobs
+                    SET status = ?, updated_at = ?
+                    WHERE job_id = ? AND status = ?
+                    """,
+                    (
+                        JobStatus.DISPATCHED.value,
+                        utc_now(),
+                        job_id,
+                        JobStatus.QUEUED.value,
+                    ),
+                )
+                conn.execute("COMMIT")
+                return job_id if cursor.rowcount == 1 else None
+            except Exception:
+                conn.execute("ROLLBACK")
+                raise
+
     def list_events(self, job_id: str) -> list[dict[str, Any]]:
         with closing(self._connect()) as conn:
             rows = conn.execute(
                 """
-                SELECT event_type, payload_json, created_at
+                SELECT id, event_type, payload_json, created_at
                 FROM job_events
                 WHERE job_id = ?
                 ORDER BY id
@@ -131,6 +265,28 @@ class JobStore:
             ).fetchall()
         return [
             {
+                "id": row["id"],
+                "event_type": row["event_type"],
+                "payload": json.loads(row["payload_json"]),
+                "created_at": row["created_at"],
+            }
+            for row in rows
+        ]
+
+    def list_events_after(self, job_id: str, after_id: int = 0) -> list[dict[str, Any]]:
+        with closing(self._connect()) as conn:
+            rows = conn.execute(
+                """
+                SELECT id, event_type, payload_json, created_at
+                FROM job_events
+                WHERE job_id = ? AND id > ?
+                ORDER BY id
+                """,
+                (job_id, after_id),
+            ).fetchall()
+        return [
+            {
+                "id": row["id"],
                 "event_type": row["event_type"],
                 "payload": json.loads(row["payload_json"]),
                 "created_at": row["created_at"],
