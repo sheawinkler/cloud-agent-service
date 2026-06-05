@@ -2,14 +2,16 @@
 
 This directory is an MVP for a cloud coding-agent platform. It mirrors the
 intended AWS/ECS architecture without creating cloud resources or deploying real
-infrastructure. Local repo jobs use mock PR/deploy artifacts. GitHub repo jobs
-use the real GitHub App clone, branch push, and PR path only when app
-credentials are configured.
+infrastructure. Local repo jobs use mock PR/deploy artifacts. Generic Git jobs
+clone and push a review branch to `origin`. GitHub repo jobs use the real GitHub
+App clone, branch push, and PR path only when app credentials are configured.
 
 ## Boundaries
 
 - Keep work local unless the user explicitly asks for real cloud/GitHub actions.
 - Treat `local://github/pr/<job_id>` as a mock PR URL, not a real GitHub PR.
+- Treat `repo_provider=git` as provider-agnostic Git: clone `git_url`, push an
+  agent branch, and return a review ref rather than a provider-native PR.
 - Treat `repo_provider=github` as a real GitHub App path; require
   `/integrations/github/status` to report configured before claiming it is live.
 - Treat `local://preview/<job_id>/<file>` as a local preview artifact, not a
@@ -24,9 +26,9 @@ credentials are configured.
 
 - `app.py`: FastAPI surface for job creation, status, and health.
 - `pipeline.py`: request validation, prompt upgrade, planning, local workspace
-  copy, GitHub App clone/sync, repo profiling and memory, budget charging,
-  deterministic coding action, tests, gates, preview proof, mock PR sync, and
-  mock deploy.
+  copy, generic Git clone/sync, GitHub App clone/sync, repo profiling and
+  memory, budget charging, deterministic coding action, tests, gates, preview
+  proof, mock PR sync, and mock deploy.
 - `store.py`: SQLite job and event persistence.
 - `orchestrator.py`: local queue plus persisted queued-job runner.
 - `worker.py`: container-friendly one-job or claim-next entry point.

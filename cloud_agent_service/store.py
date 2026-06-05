@@ -37,6 +37,7 @@ class JobStore:
                         normalized_prompt TEXT NOT NULL DEFAULT '',
                         repo_path TEXT NOT NULL,
                         repo_provider TEXT NOT NULL DEFAULT 'local',
+                        git_url TEXT,
                         github_repo TEXT,
                         parent_job_id TEXT,
                         working_branch TEXT NOT NULL DEFAULT '',
@@ -104,6 +105,7 @@ class JobStore:
             "max_runtime_seconds": "INTEGER NOT NULL DEFAULT 600",
             "max_changed_files": "INTEGER NOT NULL DEFAULT 12",
             "repo_provider": "TEXT NOT NULL DEFAULT 'local'",
+            "git_url": "TEXT",
             "github_repo": "TEXT",
             "parent_job_id": "TEXT",
             "working_branch": "TEXT NOT NULL DEFAULT ''",
@@ -120,12 +122,12 @@ class JobStore:
                     """
                     INSERT INTO jobs (
                         job_id, user_id, prompt, repo_path, repo_provider,
-                        github_repo, parent_job_id, working_branch, base_branch,
-                        deploy_policy, token_budget, max_prompt_chars,
+                        git_url, github_repo, parent_job_id, working_branch,
+                        base_branch, deploy_policy, token_budget, max_prompt_chars,
                         max_runtime_seconds, max_changed_files, status, created_at,
                         updated_at
                     )
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         job["job_id"],
@@ -133,6 +135,7 @@ class JobStore:
                         job["prompt"],
                         job["repo_path"],
                         job["repo_provider"],
+                        job.get("git_url"),
                         job.get("github_repo"),
                         job.get("parent_job_id"),
                         job["working_branch"],

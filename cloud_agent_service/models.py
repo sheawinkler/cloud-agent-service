@@ -39,6 +39,7 @@ class DeploymentPolicy(StrEnum):
 
 class RepoProvider(StrEnum):
     LOCAL = "local"
+    GIT = "git"
     GITHUB = "github"
 
 
@@ -47,6 +48,7 @@ class JobRequest:
     prompt: str
     repo_path: str = ""
     repo_provider: RepoProvider = RepoProvider.LOCAL
+    git_url: str | None = None
     github_repo: str | None = None
     parent_job_id: str | None = None
     user_id: str = "local-user"
@@ -105,6 +107,7 @@ class WorkerJobPayload:
     user_id: str
     repo_provider: str
     repo_path: str
+    git_url: str | None
     github_repo: str | None
     base_branch: str
     working_branch: str

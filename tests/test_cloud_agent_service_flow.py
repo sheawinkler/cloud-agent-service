@@ -1,3 +1,4 @@
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -32,6 +33,36 @@ class CloudAgentServiceFlowTests(unittest.TestCase):
         )
         return repo
 
+    def _build_bare_git_remote(self, root: Path) -> Path:
+        source = self._build_repo(root)
+        subprocess.run(["git", "init", "-b", "main"], cwd=source, check=True, capture_output=True)
+        subprocess.run(
+            ["git", "config", "user.email", "test@example.com"],
+            cwd=source,
+            check=True,
+            capture_output=True,
+        )
+        subprocess.run(
+            ["git", "config", "user.name", "Test User"],
+            cwd=source,
+            check=True,
+            capture_output=True,
+        )
+        subprocess.run(["git", "add", "index.html"], cwd=source, check=True, capture_output=True)
+        subprocess.run(
+            ["git", "commit", "-m", "Initial site"],
+            cwd=source,
+            check=True,
+            capture_output=True,
+        )
+        remote = root / "remote.git"
+        subprocess.run(
+            ["git", "clone", "--bare", str(source), str(remote)],
+            check=True,
+            capture_output=True,
+        )
+        return remote
+
     def test_rejects_oversized_prompt_before_dispatch(self):
         with tempfile.TemporaryDirectory() as tmp:
             repo = self._build_repo(Path(tmp))
@@ -43,6 +74,16 @@ class CloudAgentServiceFlowTests(unittest.TestCase):
 
             with self.assertRaises(RequestValidationError):
                 RequestValidator().validate(request)
+
+    def test_rejects_git_url_with_embedded_credentials(self):
+        request = JobRequest(
+            prompt="For my shopping website, create a buy button.",
+            repo_provider=RepoProvider.GIT,
+            git_url="https://user:token@git.example.com/owner/shop.git",
+        )
+
+        with self.assertRaises(RequestValidationError):
+            RequestValidator().validate(request)
 
     def test_successful_local_flow_covers_request_to_final_response(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -149,6 +190,49 @@ class CloudAgentServiceFlowTests(unittest.TestCase):
             self.assertEqual("owner/shop", payload.github_repo)
             self.assertEqual("", payload.repo_path)
             self.assertEqual("agent/" + job_id, payload.working_branch)
+
+    def test_generic_git_worker_payload_uses_git_url_without_local_path(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            flow = self._build_flow(Path(tmp))
+            request = JobRequest(
+                prompt="For my shopping website, create a buy button.",
+                repo_provider=RepoProvider.GIT,
+                git_url="https://git.example.com/owner/shop.git",
+                token_budget=1234,
+            )
+
+            job_id = flow.create_job(request)
+            payload = flow.build_worker_payload(job_id)
+
+            self.assertEqual("git", payload.repo_provider)
+            self.assertEqual("https://git.example.com/owner/shop.git", payload.git_url)
+            self.assertEqual("", payload.repo_path)
+            self.assertEqual("agent/" + job_id, payload.working_branch)
+
+    def test_generic_git_flow_clones_and_pushes_review_branch(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            remote = self._build_bare_git_remote(root)
+            flow = self._build_flow(root)
+            request = JobRequest(
+                prompt="For my shopping website, create a buy button.",
+                repo_provider=RepoProvider.GIT,
+                git_url=f"file://{remote}",
+                deploy_policy=DeploymentPolicy.PR_ONLY,
+            )
+
+            job_id = flow.create_job(request)
+            result = flow.run_job(job_id)
+
+            self.assertEqual(JobStatus.SUCCEEDED, result.status)
+            self.assertEqual(f"git://review/agent/{job_id}", result.pr_url)
+            self.assertEqual("git", result.evidence["repo_provider"])
+            self.assertEqual("file://local-git-remote", result.evidence["git_target"])
+            subprocess.run(
+                ["git", "--git-dir", str(remote), "rev-parse", f"refs/heads/agent/{job_id}"],
+                check=True,
+                capture_output=True,
+            )
 
     def test_continuation_job_reuses_parent_branch(self):
         with tempfile.TemporaryDirectory() as tmp:

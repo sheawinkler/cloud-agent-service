@@ -19,6 +19,7 @@ the deploy boundary when evidence is weak.
 | Repo memory | Follow-up jobs can reuse prior repo context. | `repo_memory_loaded` is emitted and `repo_memory` records the last profile. |
 | Safety | Failed tests or policies stop sync/deploy. | Gate failure returns `failed` before mock PR/deploy. |
 | Preview proof | Reviewers get inspectable evidence before deploy. | Final result includes preview URL, preview artifact, and browser-proof checks. |
+| Git sync | Jobs are not locked to one Git forge. | Generic Git jobs clone a remote and push a review branch. |
 | GitHub sync | GitHub jobs can use app-scoped credentials instead of user tokens. | Configured GitHub App jobs clone, push a branch, and create or reuse a PR. |
 | Approval gates | Deployment does not happen without policy approval. | Manual jobs return `ready` until approved. |
 | Operator UX | A reviewer can see what happened quickly. | Final result includes changed files, commands, gates, and risks. |
@@ -33,6 +34,7 @@ the deploy boundary when evidence is weak.
 - Policy gate failure rate by gate.
 - Jobs stopped before deploy due to validation.
 - Preview proof pass rate.
+- Generic Git sync success rate.
 - GitHub App sync success rate.
 - Average changed files per job.
 - Average token budget requested per job.
@@ -83,12 +85,18 @@ the deploy boundary when evidence is weak.
    - Expected: status reports configured, the repo is cloned by installation
      token, an agent branch is pushed, and a PR URL is returned.
 
-10. Conversation continuation
+10. Generic Git remote
+    - Submit `repo_provider=git` with a private or public `git_url` available
+      to the worker runtime.
+    - Expected: the repo is cloned, an agent branch is pushed to `origin`, and
+      the result returns a `git://review/...` review ref.
+
+11. Conversation continuation
     - Run `/jobs/<job_id>/continue` after a completed or failed job.
     - Expected: the child job records `parent_job_id`, reuses the same provider
       and branch lineage, and emits its own evidence.
 
-11. Deployment policy matrix
+12. Deployment policy matrix
     - Submit equivalent jobs with `manual`, `local`, `never`, `pr_only`,
       `preview_only`, `staging_auto`, and `production_approval`.
     - Expected: each policy returns the documented deploy status and only writes
@@ -121,5 +129,6 @@ job_succeeded
 
 The service should be considered not production-ready until real deployment
 integration, auth, multi-tenant quotas, durable cloud storage, and ECS/Fargate
-worker dispatch replace the local defaults. Real GitHub sync is implemented only
-for `repo_provider=github` when app credentials are configured and verified.
+worker dispatch replace the local defaults. Generic Git sync is provider
+agnostic, while GitHub PR creation is implemented only for `repo_provider=github`
+when app credentials are configured and verified.

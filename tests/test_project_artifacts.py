@@ -15,6 +15,7 @@ class ProjectArtifactTests(unittest.TestCase):
         self.assertEqual("succeeded", payload["final_result"]["status"])
         self.assertIn("policy_gate_results", payload["final_result"])
         self.assertIn("evidence", payload["final_result"])
+        self.assertIn("git_url", payload["job_payload"])
         self.assertIn("github_repo", payload["job_payload"])
 
     def test_demo_local_flow_succeeds(self):

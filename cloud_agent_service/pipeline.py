@@ -68,6 +68,10 @@ class GitHubAppError(RuntimeError):
     pass
 
 
+class GitProviderError(RuntimeError):
+    pass
+
+
 class RequestValidator:
     def validate(self, request: JobRequest) -> None:
         prompt = request.prompt.strip()
@@ -82,10 +86,24 @@ class RequestValidator:
         elif request.repo_provider == RepoProvider.GITHUB:
             if not request.github_repo or not re.fullmatch(r"[^/\s]+/[^/\s]+", request.github_repo):
                 raise RequestValidationError("github_repo must be in owner/repo format")
+        elif request.repo_provider == RepoProvider.GIT:
+            if not request.git_url:
+                raise RequestValidationError("git_url is required for generic Git jobs")
+            self._validate_git_url(request.git_url)
         if request.token_budget <= 0:
             raise RequestValidationError("token_budget must be positive")
         if request.max_runtime_seconds <= 0:
             raise RequestValidationError("max_runtime_seconds must be positive")
+
+    @staticmethod
+    def _validate_git_url(git_url: str) -> None:
+        if git_url.startswith("-") or any(char.isspace() for char in git_url):
+            raise RequestValidationError("git_url must be a single Git remote value")
+        parsed = urllib.parse.urlparse(git_url)
+        if parsed.username or parsed.password:
+            raise RequestValidationError(
+                "git_url must not embed credentials; use runtime Git credentials instead"
+            )
 
 
 class PromptUpgrader:
@@ -385,6 +403,39 @@ class GitHubRepoConnector:
         return destination, token
 
 
+class GitRepoConnector:
+    def clone(
+        self,
+        git_url: str,
+        base_branch: str,
+        workspace_root: str | Path,
+        job_id: str,
+    ) -> Path:
+        destination = Path(workspace_root).expanduser().resolve() / job_id / "repo"
+        if destination.exists():
+            shutil.rmtree(destination)
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        command = self._git_command_prefix() + [
+            "clone",
+            "--branch",
+            base_branch,
+            "--single-branch",
+            git_url,
+            str(destination),
+        ]
+        result = subprocess.run(command, capture_output=True, text=True, check=False)
+        if result.returncode != 0:
+            raise GitProviderError("generic Git clone failed")
+        return destination
+
+    @staticmethod
+    def _git_command_prefix() -> list[str]:
+        extra_header = os.environ.get("GIT_HTTP_EXTRAHEADER")
+        if extra_header:
+            return ["git", "-c", f"http.extraheader={extra_header}"]
+        return ["git"]
+
+
 class DependencyInstaller:
     def requested_modules(self, plan: AgentPlan) -> list[str]:
         return [
@@ -644,6 +695,46 @@ class LocalGitHubSync:
         return f"local://github/pr/{job_id}"
 
 
+class GenericGitSync:
+    def sync(
+        self,
+        repo_path: str | Path,
+        working_branch: str,
+        result: dict[str, Any],
+    ) -> str:
+        repo = Path(repo_path)
+        self._git(repo, ["config", "user.name", "cloud-agent-service"])
+        self._git(repo, ["config", "user.email", "cloud-agent-service@users.noreply.github.com"])
+        self._git(repo, ["checkout", "-B", working_branch])
+        for rel_path in result["changed_files"]:
+            self._git(repo, ["add", rel_path])
+        status = self._git(repo, ["status", "--porcelain"])
+        if status.strip():
+            self._git(repo, ["commit", "-m", "Apply cloud agent changes"])
+        self._git(
+            repo,
+            ["push", "origin", f"HEAD:refs/heads/{working_branch}", "--force-with-lease"],
+            include_auth=True,
+        )
+        return f"git://review/{working_branch}"
+
+    @staticmethod
+    def _git(repo: Path, args: list[str], include_auth: bool = False) -> str:
+        command = ["git", *args]
+        if include_auth and os.environ.get("GIT_HTTP_EXTRAHEADER"):
+            command = ["git", "-c", f"http.extraheader={os.environ['GIT_HTTP_EXTRAHEADER']}", *args]
+        result = subprocess.run(
+            command,
+            cwd=repo,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if result.returncode != 0:
+            raise GitProviderError(f"git {' '.join(args[:2])} failed")
+        return result.stdout
+
+
 class GitHubAppSync:
     def __init__(self, client: GitHubAppClient) -> None:
         self.client = client
@@ -838,6 +929,7 @@ class AgentCloudFlow:
         self.upgrader = PromptUpgrader()
         self.planner = Planner()
         self.repo_connector = LocalRepoConnector()
+        self.git_repo_connector = GitRepoConnector()
         self.github_client = GitHubAppClient()
         self.github_repo_connector = GitHubRepoConnector(self.github_client)
         self.repo_analyzer = RepoAnalyzer()
@@ -846,6 +938,7 @@ class AgentCloudFlow:
         self.test_runner = TestRunner()
         self.policy_gate = PolicyGate()
         self.github_sync = LocalGitHubSync()
+        self.git_sync = GenericGitSync()
         self.github_app_sync = GitHubAppSync(self.github_client)
         self.github_integration = GitHubIntegration(self.github_client)
         self.preview_publisher = PreviewPublisher()
@@ -861,6 +954,7 @@ class AgentCloudFlow:
                 "prompt": request.prompt,
                 "repo_path": self._repo_path_for_store(request),
                 "repo_provider": request.repo_provider.value,
+                "git_url": request.git_url,
                 "github_repo": request.github_repo,
                 "parent_job_id": request.parent_job_id,
                 "working_branch": self._working_branch(job_id, request),
@@ -894,6 +988,7 @@ class AgentCloudFlow:
             user_id=request.user_id,
             repo_provider=request.repo_provider.value,
             repo_path=request.repo_path,
+            git_url=request.git_url,
             github_repo=request.github_repo,
             base_branch=request.base_branch,
             working_branch=job["working_branch"] or f"agent/{job_id}",
@@ -984,6 +1079,15 @@ class AgentCloudFlow:
                     raise RequestValidationError("github_repo is required for GitHub jobs")
                 workspace_repo, github_token = self.github_repo_connector.clone(
                     request.github_repo,
+                    request.base_branch,
+                    self.workspace_root,
+                    job_id,
+                )
+            elif request.repo_provider == RepoProvider.GIT:
+                if not request.git_url:
+                    raise RequestValidationError("git_url is required for generic Git jobs")
+                workspace_repo = self.git_repo_connector.clone(
+                    request.git_url,
                     request.base_branch,
                     self.workspace_root,
                     job_id,
@@ -1096,6 +1200,13 @@ class AgentCloudFlow:
                     evidence,
                 )
                 sync_provider = "github-app"
+            elif request.repo_provider == RepoProvider.GIT:
+                pr_url = self.git_sync.sync(
+                    workspace_repo,
+                    job["working_branch"] or f"agent/{job_id}",
+                    agent_result,
+                )
+                sync_provider = "generic-git"
             else:
                 pr_url = self.github_sync.sync(self.artifacts_dir, job_id, agent_result)
                 sync_provider = "local-github-mock"
@@ -1149,6 +1260,7 @@ class AgentCloudFlow:
             prompt=job["prompt"],
             repo_path=job["repo_path"],
             repo_provider=RepoProvider(job["repo_provider"]),
+            git_url=job["git_url"],
             github_repo=job["github_repo"],
             parent_job_id=job["parent_job_id"],
             user_id=job["user_id"],
@@ -1162,7 +1274,7 @@ class AgentCloudFlow:
 
     @staticmethod
     def _repo_path_for_store(request: JobRequest) -> str:
-        if request.repo_provider == RepoProvider.GITHUB:
+        if request.repo_provider in {RepoProvider.GIT, RepoProvider.GITHUB}:
             return ""
         return str(Path(request.repo_path).expanduser().resolve())
 
@@ -1177,6 +1289,8 @@ class AgentCloudFlow:
     def _repo_key(request: JobRequest) -> str:
         if request.repo_provider == RepoProvider.GITHUB and request.github_repo:
             return f"github:{request.github_repo}"
+        if request.repo_provider == RepoProvider.GIT and request.git_url:
+            return f"git:{request.git_url}"
         return f"local:{Path(request.repo_path).expanduser().resolve()}"
 
     @staticmethod
@@ -1189,6 +1303,7 @@ class AgentCloudFlow:
         return {
             "job_id": job_id,
             "repo_provider": request.repo_provider.value,
+            "git_target": AgentCloudFlow._safe_git_target(request.git_url),
             "github_repo": request.github_repo,
             "preview_url": preview.preview_url,
             "preview_artifact_path": preview.artifact_path,
@@ -1197,6 +1312,22 @@ class AgentCloudFlow:
             "repo_profile": asdict(repo_profile),
             "next_action": "review_pr",
         }
+
+    @staticmethod
+    def _safe_git_target(git_url: str | None) -> str | None:
+        if not git_url:
+            return None
+        parsed = urllib.parse.urlparse(git_url)
+        if parsed.scheme and parsed.netloc:
+            return urllib.parse.urlunparse(
+                (parsed.scheme, parsed.hostname or parsed.netloc, parsed.path, "", "", "")
+            )
+        if git_url.startswith("git@") and ":" in git_url:
+            host, path = git_url.split(":", 1)
+            return f"{host}:{path}"
+        if parsed.scheme == "file":
+            return "file://local-git-remote"
+        return "git-remote"
 
     @staticmethod
     def _estimated_tokens(text: str) -> int:
@@ -1312,7 +1443,9 @@ class AgentCloudFlow:
             [
                 request.user_id,
                 request.repo_provider.value,
-                request.github_repo or str(Path(request.repo_path).expanduser().resolve()),
+                request.github_repo
+                or request.git_url
+                or str(Path(request.repo_path).expanduser().resolve()),
                 request.base_branch,
                 request.prompt,
                 os.urandom(8).hex(),

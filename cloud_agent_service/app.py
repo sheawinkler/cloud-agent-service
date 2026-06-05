@@ -21,6 +21,7 @@ class CreateJobPayload(BaseModel):
     prompt: str = Field(min_length=1)
     repo_path: str = ""
     repo_provider: RepoProvider = RepoProvider.LOCAL
+    git_url: str | None = None
     github_repo: str | None = None
     parent_job_id: str | None = None
     user_id: str = "local-user"
@@ -158,6 +159,7 @@ def continue_job(
         prompt=payload.prompt,
         repo_path=parent["repo_path"],
         repo_provider=RepoProvider(parent["repo_provider"]),
+        git_url=parent["git_url"],
         github_repo=parent["github_repo"],
         parent_job_id=job_id,
         user_id=parent["user_id"],
@@ -187,6 +189,7 @@ def _job_request_from_payload(payload: CreateJobPayload) -> JobRequest:
         prompt=payload.prompt,
         repo_path=payload.repo_path,
         repo_provider=payload.repo_provider,
+        git_url=payload.git_url,
         github_repo=payload.github_repo,
         parent_job_id=payload.parent_job_id,
         user_id=payload.user_id,

@@ -6,14 +6,15 @@ API intake, prompt validation, prompt upgrade, job state, queue/orchestration,
 agent execution, tests, policy gates, preview proof, PR sync, and deployment
 policy handling.
 It also includes the cloud-ready operational boundaries needed before real
-AWS/GitHub rollout: durable queue claiming, worker payloads, budget ledger,
-event streaming, repo profiling, repo memory, approval gates, continuation, and
+AWS/Git rollout: durable queue claiming, worker payloads, budget ledger, event
+streaming, repo profiling, repo memory, approval gates, continuation, and
 evaluation.
 
-Local repo jobs still use mock PR and deployment artifacts. GitHub repo jobs use
-a GitHub App path when credentials are configured: clone by installation token,
-push an agent branch, and create or reuse a pull request. The MVP does not
-create AWS resources or perform production deployment.
+Local repo jobs still use mock PR and deployment artifacts. Generic Git jobs
+clone from `git_url` and push an agent branch back to `origin`. GitHub repo jobs
+are a specialization that use a GitHub App installation token and create or
+reuse a pull request. The MVP does not create AWS resources or perform
+production deployment.
 
 ## App Flow
 
@@ -55,8 +56,9 @@ Monitoring:
 
 - `app.py`: FastAPI surface for job creation, status, and health checks.
 - `pipeline.py`: request validation, prompt upgrade, planning, local repo copy,
-  GitHub App clone/sync, deterministic edit, tests, policy gates, preview
-  artifacts, local GitHub sync mock, and local deployment mock.
+  generic Git clone/sync, GitHub App clone/PR sync, deterministic edit, tests,
+  policy gates, preview artifacts, local GitHub sync mock, and local deployment
+  mock.
 - `store.py`: SQLite job and event persistence.
 - `orchestrator.py`: local in-memory queue plus persisted queued-job runner.
 - `worker.py`: container-friendly single-job or claim-next entry point.
@@ -218,10 +220,34 @@ Check whether real GitHub App credentials are configured:
 curl -sS http://127.0.0.1:8000/integrations/github/status
 ```
 
+## Git Jobs
+
+Use `repo_provider=git` for provider-agnostic Git remotes. The service will
+clone `git_url`, create or reuse `agent/<job_id>`, commit the agent changes, and
+push `refs/heads/agent/<job_id>` back to `origin`. It returns a review ref like
+`git://review/agent/<job_id>` because generic Git does not have a standard PR
+API.
+
+```bash
+curl -X POST http://127.0.0.1:8000/run-code-job \
+  -H 'content-type: application/json' \
+  -d '{
+    "prompt": "For my shopping website, create a buy button.",
+    "repo_provider": "git",
+    "git_url": "https://git.example.com/owner/repo.git",
+    "base_branch": "main",
+    "deploy_policy": "pr_only"
+  }'
+```
+
+Do not embed credentials in `git_url`; validation rejects URL userinfo. Use the
+runtime Git credential helper, SSH agent, or `GIT_HTTP_EXTRAHEADER` in the
+worker environment for private remotes.
+
 ## GitHub App Jobs
 
 Set these environment variables in the API/worker runtime to enable real GitHub
-App sync:
+App PR sync:
 
 ```bash
 export GITHUB_APP_ID=123456
@@ -235,7 +261,7 @@ Optional:
 export GITHUB_API_URL=https://api.github.com
 ```
 
-Submit a GitHub-backed job:
+Submit a GitHub-backed job when you want GitHub App auth and PR creation:
 
 ```bash
 curl -X POST http://127.0.0.1:8000/run-code-job \
@@ -364,11 +390,14 @@ and easier to audit.
 
 The MVP is still cloud-ready rather than fully cloud-native:
 
-- local repo copy by default; GitHub App clone/sync only when credentials exist
+- local repo copy by default
+- generic Git clone/sync for provider-agnostic remotes
+- GitHub App clone/PR sync only when credentials exist
 - SQLite queued-job claim instead of SQS
 - local Docker/worker contract instead of ECS/Fargate
 - local SQLite instead of managed Postgres/DynamoDB
-- local mock PR artifact for local jobs; real GitHub PR path for GitHub jobs
+- local mock PR artifact for local jobs; pushed review ref for generic Git jobs;
+  real GitHub PR path for GitHub jobs
 - local mock deployment artifact instead of AWS deploy
 
 That keeps the full flow testable before replacing each local component with a
