@@ -40,6 +40,8 @@ class JobStore:
                         git_url TEXT,
                         github_repo TEXT,
                         parent_job_id TEXT,
+                        model_id TEXT NOT NULL DEFAULT 'local-deterministic',
+                        agent_id TEXT NOT NULL DEFAULT 'repo-editor-v1',
                         working_branch TEXT NOT NULL DEFAULT '',
                         workspace_path TEXT NOT NULL DEFAULT '',
                         base_branch TEXT NOT NULL,
@@ -108,6 +110,8 @@ class JobStore:
             "git_url": "TEXT",
             "github_repo": "TEXT",
             "parent_job_id": "TEXT",
+            "model_id": "TEXT NOT NULL DEFAULT 'local-deterministic'",
+            "agent_id": "TEXT NOT NULL DEFAULT 'repo-editor-v1'",
             "working_branch": "TEXT NOT NULL DEFAULT ''",
         }
         for name, definition in additions.items():
@@ -123,11 +127,11 @@ class JobStore:
                     INSERT INTO jobs (
                         job_id, user_id, prompt, repo_path, repo_provider,
                         git_url, github_repo, parent_job_id, working_branch,
-                        base_branch, deploy_policy, token_budget, max_prompt_chars,
-                        max_runtime_seconds, max_changed_files, status, created_at,
-                        updated_at
+                        model_id, agent_id, base_branch, deploy_policy, token_budget,
+                        max_prompt_chars, max_runtime_seconds, max_changed_files,
+                        status, created_at, updated_at
                     )
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         job["job_id"],
@@ -139,6 +143,8 @@ class JobStore:
                         job.get("github_repo"),
                         job.get("parent_job_id"),
                         job["working_branch"],
+                        job["model_id"],
+                        job["agent_id"],
                         job["base_branch"],
                         job["deploy_policy"],
                         job["token_budget"],

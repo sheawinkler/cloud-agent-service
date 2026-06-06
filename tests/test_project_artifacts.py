@@ -17,6 +17,9 @@ class ProjectArtifactTests(unittest.TestCase):
         self.assertIn("evidence", payload["final_result"])
         self.assertIn("git_url", payload["job_payload"])
         self.assertIn("github_repo", payload["job_payload"])
+        self.assertIn("model_spec", payload["job_payload"])
+        self.assertIn("agent_spec", payload["job_payload"])
+        self.assertIn("promotion_decision", payload["final_result"])
 
     def test_demo_local_flow_succeeds(self):
         result = subprocess.run(

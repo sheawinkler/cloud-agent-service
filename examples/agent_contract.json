@@ -9,6 +9,34 @@
     "base_branch": "main",
     "working_branch": "agent/demo-job-001",
     "parent_job_id": null,
+    "model_id": "local-deterministic",
+    "agent_id": "repo-editor-v1",
+    "model_spec": {
+      "model_id": "local-deterministic",
+      "provider": "local",
+      "name": "deterministic-repo-editor",
+      "context_window": 8000,
+      "cost_tier": "free-local",
+      "supports_tools": true
+    },
+    "agent_spec": {
+      "agent_id": "repo-editor-v1",
+      "role": "repo_editor",
+      "model_id": "local-deterministic",
+      "allowed_shell_commands": [
+        "git",
+        "python",
+        "python3",
+        "pip",
+        "pytest",
+        "ruff",
+        "mypy",
+        "npm",
+        "pnpm",
+        "yarn"
+      ],
+      "output_contract": "job_result.v1"
+    },
     "normalized_prompt": "For my shopping website, create a buy button.",
     "acceptance_criteria": [
       "Inspect the repository before editing.",
@@ -29,6 +57,7 @@
     ],
     "allowed_shell_commands": [
       "git",
+      "python",
       "python3",
       "pip",
       "pytest",
@@ -53,7 +82,8 @@
       "pr_url": "str|null",
       "deployment_status": "str",
       "residual_risks": "list[str]",
-      "evidence": "dict[str, object]"
+      "evidence": "dict[str, object]",
+      "promotion_decision": "dict[str, object]"
     }
   },
   "budget_ledger_example": [
@@ -99,6 +129,32 @@
       "repo_key": "local:/host_repo",
       "git_target": null,
       "github_repo": null,
+      "model_spec": {
+        "model_id": "local-deterministic",
+        "provider": "local",
+        "name": "deterministic-repo-editor",
+        "context_window": 8000,
+        "cost_tier": "free-local",
+        "supports_tools": true
+      },
+      "agent_spec": {
+        "agent_id": "repo-editor-v1",
+        "role": "repo_editor",
+        "model_id": "local-deterministic",
+        "allowed_shell_commands": [
+          "git",
+          "python",
+          "python3",
+          "pip",
+          "pytest",
+          "ruff",
+          "mypy",
+          "npm",
+          "pnpm",
+          "yarn"
+        ],
+        "output_contract": "job_result.v1"
+      },
       "preview_url": "local://preview/demo-job-001/index.html",
       "preview_artifact_path": "artifacts/previews/demo-job-001/index.html",
       "browser_proof_path": "artifacts/previews/demo-job-001/browser-proof.json",
@@ -116,6 +172,18 @@
           "python3 -m compileall ."
         ],
         "risk_notes": []
+      }
+    },
+    "promotion_decision": {
+      "status": "needs_review",
+      "reason": "Run passed tests and policy gates; human review is required before merge or deploy.",
+      "evidence": {
+        "tests_failed": [],
+        "changed_files": [
+          "index.html"
+        ],
+        "deployment_status": "ready: manual approval required",
+        "preview_url": "local://preview/demo-job-001/index.html"
       }
     }
   }

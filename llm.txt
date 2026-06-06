@@ -1,16 +1,24 @@
-Cloud Agent Service Local MVP
-=============================
+Cloud Agent Service MVP
+=======================
 
 Purpose:
-This directory implements a local-only skeleton for a cloud coding-agent
-application. It accepts a user request, validates it, upgrades the prompt,
-creates a job, runs a local agent workflow, tests changes, applies policy gates,
-records a mock GitHub PR, and records a mock deployment.
+This directory implements an MVP for a cloud coding-agent application. It
+accepts a user request, validates it, upgrades the prompt, creates a job, runs a
+repo-editing agent workflow, tests changes, applies policy gates, records
+evidence, and syncs review output through local mock, generic Git, or GitHub App
+paths.
 
 Important boundary:
-The current implementation does not push to GitHub, does not call AWS, and does
-not perform a real deployment. Local PR and deployment outputs are artifacts used
-to prove the control flow.
+The current implementation does not call AWS and does not perform a real
+deployment. Local PR and deployment outputs are artifacts used to prove the
+control flow. Generic Git jobs push review branches to origin. GitHub App jobs
+require app credentials before claiming live clone/push/PR behavior.
+
+Mirendil framing:
+Treat each repo update as a minimal model lab run: ModelSpec + AgentSpec +
+bounded task + evidence -> PromotionDecision. The current default model is
+local-deterministic; do not claim external SLM/LLM inference unless wired and
+verified.
 
 Primary files:
 - app.py: FastAPI API.
@@ -45,14 +53,17 @@ Expected successful flow:
 3. Upgrade prompt into a concise implementation brief.
 4. Create job record and queue event.
 5. Dispatch local worker/container contract.
-6. Copy repo into an isolated workspace.
-7. Execute deterministic local coding action.
-8. Run compile/test checks.
-9. Apply policy gates.
-10. Record mock PR/deployment and return final status.
+6. Copy or clone repo into an isolated workspace.
+7. Record lab run config: model_id and agent_id.
+8. Execute deterministic local coding action.
+9. Run compile/test checks.
+10. Apply policy gates.
+11. Record preview/browser evidence.
+12. Sync review output and return final status plus promotion decision.
 
 Do not:
 - Treat mock PR URLs as real GitHub PRs.
+- Treat local-deterministic as live external model inference.
 - Treat local deployment artifacts as production deploys.
 - Commit runtime SQLite databases, generated workspaces, or artifacts.
 - Add package dependencies without updating the allowlist and tests.

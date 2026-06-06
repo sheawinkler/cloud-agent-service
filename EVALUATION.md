@@ -17,8 +17,10 @@ the deploy boundary when evidence is weak.
 | Budget control | Work stops before spend exceeds policy. | Budget ledger records each stage and tiny budgets fail before sync. |
 | Repo intelligence | The service knows what kind of repo it is editing. | `repo_analyzed` records framework, package manager, and test hints. |
 | Repo memory | Follow-up jobs can reuse prior repo context. | `repo_memory_loaded` is emitted and `repo_memory` records the last profile. |
+| Model/agent tracking | A repo update is attributable to a specific lab config. | Worker payload and result evidence include `ModelSpec` and `AgentSpec`. |
 | Safety | Failed tests or policies stop sync/deploy. | Gate failure returns `failed` before mock PR/deploy. |
 | Preview proof | Reviewers get inspectable evidence before deploy. | Final result includes preview URL, preview artifact, and browser-proof checks. |
+| Promotion decision | The run has a clear model/agent verdict. | Final result returns `promote`, `reject`, or `needs_review` with evidence. |
 | Git sync | Jobs are not locked to one Git forge. | Generic Git jobs clone a remote and push a review branch. |
 | GitHub sync | GitHub jobs can use app-scoped credentials instead of user tokens. | Configured GitHub App jobs clone, push a branch, and create or reuse a PR. |
 | Approval gates | Deployment does not happen without policy approval. | Manual jobs return `ready` until approved. |
@@ -34,6 +36,7 @@ the deploy boundary when evidence is weak.
 - Policy gate failure rate by gate.
 - Jobs stopped before deploy due to validation.
 - Preview proof pass rate.
+- Promotion status distribution by model and agent.
 - Generic Git sync success rate.
 - GitHub App sync success rate.
 - Average changed files per job.
@@ -77,7 +80,8 @@ the deploy boundary when evidence is weak.
 
 8. Golden task score
    - Run `python3 scripts/evaluate_mvp.py`.
-   - Expected: score is `1.0` for the buy-button task.
+   - Expected: score is `1.0` for the buy-button task, including promotion
+     decision creation.
 
 9. GitHub App readiness
    - Configure `GITHUB_APP_ID`, `GITHUB_APP_INSTALLATION_ID`, and
@@ -102,6 +106,12 @@ the deploy boundary when evidence is weak.
     - Expected: each policy returns the documented deploy status and only writes
       deployment artifacts for deploy-capable local policies.
 
+13. Model/agent lab run
+    - Submit a valid job with `model_id=local-deterministic` and
+      `agent_id=repo-editor-v1`.
+    - Expected: worker payload and final evidence include model/agent specs,
+      and the result includes a promotion decision.
+
 ## Evidence To Show In A Demo
 
 The demo should make these proof points visible without much narration:
@@ -114,6 +124,7 @@ budget_charged
 repo_cloned
 repo_analyzed
 repo_memory_loaded
+lab_run_configured
 prompt_upgraded
 plan_created
 dependencies_requested
@@ -125,10 +136,13 @@ browser_proof_finished
 pr_created_or_updated
 deployment_finished
 job_succeeded
+promotion_decision_created
 ```
 
 The service should be considered not production-ready until real deployment
 integration, auth, multi-tenant quotas, durable cloud storage, and ECS/Fargate
-worker dispatch replace the local defaults. Generic Git sync is provider
+worker dispatch replace the local defaults. The model/agent lab layer records
+run metadata and deterministic promotion decisions; it does not yet train,
+fine-tune, or call external SLM/LLM providers. Generic Git sync is provider
 agnostic, while GitHub PR creation is implemented only for `repo_provider=github`
 when app credentials are configured and verified.

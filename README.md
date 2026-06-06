@@ -7,14 +7,19 @@ agent execution, tests, policy gates, preview proof, PR sync, and deployment
 policy handling.
 It also includes the cloud-ready operational boundaries needed before real
 AWS/Git rollout: durable queue claiming, worker payloads, budget ledger, event
-streaming, repo profiling, repo memory, approval gates, continuation, and
-evaluation.
+streaming, repo profiling, repo memory, model/agent run metadata, approval
+gates, continuation, and evaluation.
 
 Local repo jobs still use mock PR and deployment artifacts. Generic Git jobs
 clone from `git_url` and push an agent branch back to `origin`. GitHub repo jobs
 are a specialization that use a GitHub App installation token and create or
 reuse a pull request. The MVP does not create AWS resources or perform
 production deployment.
+
+The Mirendil-facing framing is that a repo update is also a minimal Language
+Model Lab run: a `ModelSpec` plus `AgentSpec` executes a bounded task and
+produces a `PromotionDecision` from tests, policy gates, preview proof, and
+deployment policy. This is not a training or fine-tuning system.
 
 ## App Flow
 
@@ -86,8 +91,21 @@ Monitoring:
 10. Run tests and policy gates before sync/deploy.
 11. Track budget usage before each major stage.
 12. Publish a local preview artifact and browser-proof checks.
-13. Return final status with events, changed files, checks, evidence, PR URL,
-    and deployment status.
+13. Record the model/agent config that produced the change.
+14. Return final status with events, changed files, checks, evidence, PR URL,
+    deployment status, and promotion decision.
+
+## Model And Agent Lab Layer
+
+Every job carries a small lab contract:
+
+- `ModelSpec`: provider, model name, context window, cost tier, tool support.
+- `AgentSpec`: role, bound model, allowed commands, output contract.
+- `PromotionDecision`: `promote`, `reject`, or `needs_review` with evidence.
+
+The default `local-deterministic` model and `repo-editor-v1` agent are explicit
+so the deterministic MVP can be compared against future external SLM/LLM-backed
+agents without changing the repo dispatch contract.
 
 ## Simple Demo
 
@@ -360,7 +378,8 @@ python3 scripts/smoke_api.py --base-url http://127.0.0.1:8000 --repo-path /host_
 
 The API smoke covers health, GitHub integration status, worker payload, job run,
 budget ledger, event list, SSE stream, manual deployment approval, one-click
-run, continuation, and budget-stop failure.
+run, continuation, model/agent payload fields, promotion decision, and
+budget-stop failure.
 
 ## Evaluation And Contracts
 

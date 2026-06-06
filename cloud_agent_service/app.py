@@ -24,6 +24,8 @@ class CreateJobPayload(BaseModel):
     git_url: str | None = None
     github_repo: str | None = None
     parent_job_id: str | None = None
+    model_id: str = "local-deterministic"
+    agent_id: str = "repo-editor-v1"
     user_id: str = "local-user"
     base_branch: str = "main"
     deploy_policy: DeploymentPolicy = DeploymentPolicy.MANUAL
@@ -47,7 +49,7 @@ def build_flow() -> AgentCloudFlow:
 flow = build_flow()
 job_queue = LocalJobQueue()
 orchestrator = LocalOrchestrator(flow, job_queue)
-app = FastAPI(title="Cloud Agent Service Local MVP", version="0.1.0")
+app = FastAPI(title="Cloud Agent Service MVP", version="0.1.0")
 
 
 @app.get("/health")
@@ -162,6 +164,8 @@ def continue_job(
         git_url=parent["git_url"],
         github_repo=parent["github_repo"],
         parent_job_id=job_id,
+        model_id=parent["model_id"],
+        agent_id=parent["agent_id"],
         user_id=parent["user_id"],
         base_branch=parent["base_branch"],
         deploy_policy=DeploymentPolicy(parent["deploy_policy"]),
@@ -192,6 +196,8 @@ def _job_request_from_payload(payload: CreateJobPayload) -> JobRequest:
         git_url=payload.git_url,
         github_repo=payload.github_repo,
         parent_job_id=payload.parent_job_id,
+        model_id=payload.model_id,
+        agent_id=payload.agent_id,
         user_id=payload.user_id,
         base_branch=payload.base_branch,
         deploy_policy=payload.deploy_policy,

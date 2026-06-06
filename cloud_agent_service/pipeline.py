@@ -16,13 +16,17 @@ from typing import Any
 
 from cloud_agent_service.models import (
     AgentPlan,
+    AgentSpec,
     DeploymentPolicy,
     GitHubIntegrationStatus,
     JobRequest,
     JobResult,
     JobStatus,
+    ModelSpec,
     NormalizedPrompt,
     PreviewArtifact,
+    PromotionDecision,
+    PromotionStatus,
     RepoProfile,
     RepoProvider,
     RiskLevel,
@@ -70,6 +74,61 @@ class GitHubAppError(RuntimeError):
 
 class GitProviderError(RuntimeError):
     pass
+
+
+class ModelAgentRegistry:
+    def __init__(self) -> None:
+        self.models = {
+            "local-deterministic": ModelSpec(
+                model_id="local-deterministic",
+                provider="local",
+                name="deterministic-repo-editor",
+                context_window=8_000,
+                cost_tier="free-local",
+                supports_tools=True,
+            ),
+            "gpt-5-coding": ModelSpec(
+                model_id="gpt-5-coding",
+                provider="openai",
+                name="gpt-5-coding",
+                context_window=128_000,
+                cost_tier="external-api",
+                supports_tools=True,
+            ),
+        }
+        self.agents = {
+            "repo-editor-v1": AgentSpec(
+                agent_id="repo-editor-v1",
+                role="repo_editor",
+                model_id="local-deterministic",
+                allowed_shell_commands=ALLOWED_SHELL_COMMANDS,
+                output_contract="job_result.v1",
+            ),
+            "repo-reviewer-v1": AgentSpec(
+                agent_id="repo-reviewer-v1",
+                role="repo_reviewer",
+                model_id="gpt-5-coding",
+                allowed_shell_commands=["git", "python3", "pytest", "ruff"],
+                output_contract="promotion_decision.v1",
+            ),
+        }
+
+    def validate(self, request: JobRequest) -> None:
+        if request.model_id not in self.models:
+            raise RequestValidationError(f"unknown model_id: {request.model_id}")
+        if request.agent_id not in self.agents:
+            raise RequestValidationError(f"unknown agent_id: {request.agent_id}")
+        agent = self.agents[request.agent_id]
+        if agent.model_id != request.model_id:
+            raise RequestValidationError(
+                f"agent_id {request.agent_id} requires model_id {agent.model_id}"
+            )
+
+    def model(self, model_id: str) -> ModelSpec:
+        return self.models[model_id]
+
+    def agent(self, agent_id: str) -> AgentSpec:
+        return self.agents[agent_id]
 
 
 class RequestValidator:
@@ -171,6 +230,7 @@ class Planner:
                 "pr_url": "str|null",
                 "deployment_status": "str",
                 "residual_risks": "list[str]",
+                "promotion_decision": "dict[str, object]",
             },
         )
 
@@ -925,6 +985,7 @@ class AgentCloudFlow:
         self.store = store
         self.workspace_root = Path(workspace_root)
         self.artifacts_dir = Path(artifacts_dir)
+        self.lab_registry = ModelAgentRegistry()
         self.validator = RequestValidator()
         self.upgrader = PromptUpgrader()
         self.planner = Planner()
@@ -946,6 +1007,7 @@ class AgentCloudFlow:
 
     def create_job(self, request: JobRequest) -> str:
         self.validator.validate(request)
+        self.lab_registry.validate(request)
         job_id = self._job_id(request)
         self.store.create_job(
             {
@@ -957,6 +1019,8 @@ class AgentCloudFlow:
                 "git_url": request.git_url,
                 "github_repo": request.github_repo,
                 "parent_job_id": request.parent_job_id,
+                "model_id": request.model_id,
+                "agent_id": request.agent_id,
                 "working_branch": self._working_branch(job_id, request),
                 "base_branch": request.base_branch,
                 "deploy_policy": request.deploy_policy.value,
@@ -981,6 +1045,8 @@ class AgentCloudFlow:
             raise KeyError(f"unknown job_id: {job_id}")
 
         request = self._request_from_job(job)
+        model_spec = self.lab_registry.model(request.model_id)
+        agent_spec = self.lab_registry.agent(request.agent_id)
         normalized = self.upgrader.upgrade(request)
         plan = self.planner.create_plan(request, normalized)
         return WorkerJobPayload(
@@ -993,6 +1059,10 @@ class AgentCloudFlow:
             base_branch=request.base_branch,
             working_branch=job["working_branch"] or f"agent/{job_id}",
             parent_job_id=request.parent_job_id,
+            model_id=request.model_id,
+            agent_id=request.agent_id,
+            model_spec=asdict(model_spec),
+            agent_spec=asdict(agent_spec),
             normalized_prompt=plan.normalized_prompt,
             acceptance_criteria=plan.acceptance_criteria,
             allowed_python_modules=plan.allowed_python_modules,
@@ -1048,6 +1118,23 @@ class AgentCloudFlow:
             DeploymentPolicy.LOCAL,
         )
         result.deployment_status = deployment_status
+        result.promotion_decision = asdict(
+            self._promotion_decision(
+                status=result.status,
+                agent_result={
+                    "changed_files": result.changed_files,
+                    "tests_failed": result.tests_failed,
+                },
+                gates=result.policy_gate_results,
+                deployment_status=deployment_status,
+                evidence=result.evidence,
+            )
+        )
+        self.store.add_event(
+            job_id,
+            "promotion_decision_created",
+            result.promotion_decision,
+        )
         self.store.add_event(job_id, "deployment_finished", {"status": deployment_status})
         self.store.update_job(job_id, result_json=asdict(result))
         return self._stored_result(self.store.get_job(job_id))
@@ -1065,6 +1152,8 @@ class AgentCloudFlow:
             raise RequestValidationError(f"job is cancelled: {job_id}")
 
         request = self._request_from_job(job)
+        model_spec = self.lab_registry.model(request.model_id)
+        agent_spec = self.lab_registry.agent(request.agent_id)
         agent_result = self._empty_agent_result()
         evidence: dict[str, Any] = {}
 
@@ -1072,6 +1161,16 @@ class AgentCloudFlow:
             self._charge_budget(job_id, request, "dispatch", 64, "worker dispatch envelope")
             self.store.update_job(job_id, status=JobStatus.DISPATCHED)
             self.store.add_event(job_id, "agent_dispatched", {"mode": "local-container-contract"})
+            self.store.add_event(
+                job_id,
+                "lab_run_configured",
+                {
+                    "model_id": request.model_id,
+                    "agent_id": request.agent_id,
+                    "model_provider": model_spec.provider,
+                    "agent_role": agent_spec.role,
+                },
+            )
 
             github_token: str | None = None
             if request.repo_provider == RepoProvider.GITHUB:
@@ -1182,7 +1281,14 @@ class AgentCloudFlow:
                 job_id,
                 agent_result["changed_files"],
             )
-            evidence = self._build_evidence(job_id, preview, repo_profile, request)
+            evidence = self._build_evidence(
+                job_id,
+                preview,
+                repo_profile,
+                request,
+                model_spec,
+                agent_spec,
+            )
             self.store.add_event(job_id, "preview_created", asdict(preview))
             self.store.add_event(job_id, "browser_proof_finished", preview.checks)
 
@@ -1222,6 +1328,18 @@ class AgentCloudFlow:
 
             self.store.update_job(job_id, status=JobStatus.SUCCEEDED)
             self.store.add_event(job_id, "job_succeeded", {})
+            promotion_decision = self._promotion_decision(
+                status=JobStatus.SUCCEEDED,
+                agent_result=agent_result,
+                gates=gates,
+                deployment_status=deployment_status,
+                evidence=evidence,
+            )
+            self.store.add_event(
+                job_id,
+                "promotion_decision_created",
+                asdict(promotion_decision),
+            )
             result = self._result(
                 job_id=job_id,
                 status=JobStatus.SUCCEEDED,
@@ -1231,6 +1349,7 @@ class AgentCloudFlow:
                 deployment_status=deployment_status,
                 residual_risks=[],
                 evidence=evidence,
+                promotion_decision=promotion_decision,
             )
             self.store.update_job(
                 job_id,
@@ -1263,6 +1382,8 @@ class AgentCloudFlow:
             git_url=job["git_url"],
             github_repo=job["github_repo"],
             parent_job_id=job["parent_job_id"],
+            model_id=job["model_id"],
+            agent_id=job["agent_id"],
             user_id=job["user_id"],
             base_branch=job["base_branch"],
             deploy_policy=DeploymentPolicy(job["deploy_policy"]),
@@ -1299,12 +1420,16 @@ class AgentCloudFlow:
         preview: PreviewArtifact,
         repo_profile: RepoProfile,
         request: JobRequest,
+        model_spec: ModelSpec,
+        agent_spec: AgentSpec,
     ) -> dict[str, Any]:
         return {
             "job_id": job_id,
             "repo_provider": request.repo_provider.value,
             "git_target": AgentCloudFlow._safe_git_target(request.git_url),
             "github_repo": request.github_repo,
+            "model_spec": asdict(model_spec),
+            "agent_spec": asdict(agent_spec),
             "preview_url": preview.preview_url,
             "preview_artifact_path": preview.artifact_path,
             "browser_proof_path": preview.browser_proof_path,
@@ -1312,6 +1437,48 @@ class AgentCloudFlow:
             "repo_profile": asdict(repo_profile),
             "next_action": "review_pr",
         }
+
+    @staticmethod
+    def _promotion_decision(
+        status: JobStatus,
+        agent_result: dict[str, Any],
+        gates: dict[str, bool],
+        deployment_status: str,
+        evidence: dict[str, Any],
+    ) -> PromotionDecision:
+        base_evidence = {
+            "tests_failed": agent_result["tests_failed"],
+            "changed_files": agent_result["changed_files"],
+            "policy_gate_results": gates,
+            "deployment_status": deployment_status,
+            "preview_url": evidence.get("preview_url"),
+        }
+        if status != JobStatus.SUCCEEDED:
+            return PromotionDecision(
+                status=PromotionStatus.REJECT,
+                reason="Run failed before satisfying validation and policy gates.",
+                evidence=base_evidence,
+            )
+        if agent_result["tests_failed"] or not all(gates.values()):
+            return PromotionDecision(
+                status=PromotionStatus.REJECT,
+                reason="Tests or policy gates failed.",
+                evidence=base_evidence,
+            )
+        if deployment_status.startswith("deployed:"):
+            return PromotionDecision(
+                status=PromotionStatus.PROMOTE,
+                reason="Run passed tests and policy gates under an auto-deployable policy.",
+                evidence=base_evidence,
+            )
+        return PromotionDecision(
+            status=PromotionStatus.NEEDS_REVIEW,
+            reason=(
+                "Run passed tests and policy gates; human review is required "
+                "before merge or deploy."
+            ),
+            evidence=base_evidence,
+        )
 
     @staticmethod
     def _safe_git_target(git_url: str | None) -> str | None:
@@ -1387,6 +1554,7 @@ class AgentCloudFlow:
             residual_risks=result["residual_risks"],
             events=self.store.list_events(result["job_id"]),
             evidence=result.get("evidence", {}),
+            promotion_decision=result.get("promotion_decision", {}),
         )
 
     def _fail(
@@ -1396,6 +1564,13 @@ class AgentCloudFlow:
         gates: dict[str, bool],
         deployment_status: str,
     ) -> JobResult:
+        promotion_decision = self._promotion_decision(
+            status=JobStatus.FAILED,
+            agent_result=agent_result,
+            gates=gates,
+            deployment_status=deployment_status,
+            evidence={},
+        )
         result = self._result(
             job_id=job_id,
             status=JobStatus.FAILED,
@@ -1405,9 +1580,15 @@ class AgentCloudFlow:
             deployment_status=deployment_status,
             residual_risks=["Validation failed; branch was not synced or deployed."],
             evidence={},
+            promotion_decision=promotion_decision,
         )
         self.store.update_job(job_id, status=JobStatus.FAILED, result_json=asdict(result))
         self.store.add_event(job_id, "job_failed", {"reason": deployment_status})
+        self.store.add_event(
+            job_id,
+            "promotion_decision_created",
+            asdict(promotion_decision),
+        )
         return result
 
     def _result(
@@ -1420,6 +1601,7 @@ class AgentCloudFlow:
         deployment_status: str,
         residual_risks: list[str],
         evidence: dict[str, Any],
+        promotion_decision: PromotionDecision,
     ) -> JobResult:
         return JobResult(
             job_id=job_id,
@@ -1435,6 +1617,7 @@ class AgentCloudFlow:
             residual_risks=residual_risks + agent_result.get("residual_risks", []),
             events=self.store.list_events(job_id),
             evidence=evidence,
+            promotion_decision=asdict(promotion_decision),
         )
 
     @staticmethod
@@ -1446,6 +1629,8 @@ class AgentCloudFlow:
                 request.github_repo
                 or request.git_url
                 or str(Path(request.repo_path).expanduser().resolve()),
+                request.model_id,
+                request.agent_id,
                 request.base_branch,
                 request.prompt,
                 os.urandom(8).hex(),

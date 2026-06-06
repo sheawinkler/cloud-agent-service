@@ -90,7 +90,9 @@ def run_smoke(base_url: str, repo_path: str) -> dict[str, Any]:
         "worker_payload",
         payload["token_budget"] == 2000
         and payload["max_changed_files"] == 2
-        and payload["working_branch"] == f"agent/{job_id}",
+        and payload["working_branch"] == f"agent/{job_id}"
+        and payload["model_id"] == "local-deterministic"
+        and payload["agent_id"] == "repo-editor-v1",
         token_budget=payload["token_budget"],
         max_changed_files=payload["max_changed_files"],
     )
@@ -157,7 +159,8 @@ def run_smoke(base_url: str, repo_path: str) -> dict[str, Any]:
         "run_code_job",
         one_click["status"] == "succeeded"
         and one_click["deployment_status"] == "ready: preview only"
-        and evidence.get("browser_checks", {}).get("buy_button_present") is True,
+        and evidence.get("browser_checks", {}).get("buy_button_present") is True
+        and one_click.get("promotion_decision", {}).get("status") == "needs_review",
         status=one_click["status"],
         deployment_status=one_click["deployment_status"],
         preview_url=evidence.get("preview_url"),

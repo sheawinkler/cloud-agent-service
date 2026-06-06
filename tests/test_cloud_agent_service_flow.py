@@ -115,6 +115,9 @@ class CloudAgentServiceFlowTests(unittest.TestCase):
                 result.evidence["preview_url"],
             )
             self.assertTrue(result.evidence["browser_checks"]["buy_button_present"])
+            self.assertEqual("local-deterministic", result.evidence["model_spec"]["model_id"])
+            self.assertEqual("repo-editor-v1", result.evidence["agent_spec"]["agent_id"])
+            self.assertEqual("promote", result.promotion_decision["status"])
 
             workspace_index = root / "workspaces" / job_id / "repo" / "index.html"
             self.assertIn('data-agent="buy-button"', workspace_index.read_text(encoding="utf-8"))
@@ -145,6 +148,8 @@ class CloudAgentServiceFlowTests(unittest.TestCase):
                 "deployment_finished",
                 "job_succeeded",
                 "repo_memory_loaded",
+                "lab_run_configured",
+                "promotion_decision_created",
             }
             self.assertTrue(expected_events.issubset(set(events)))
             repo_key = f"local:{repo.resolve()}"
@@ -171,7 +176,51 @@ class CloudAgentServiceFlowTests(unittest.TestCase):
             self.assertEqual(1234, payload.token_budget)
             self.assertEqual(77, payload.max_runtime_seconds)
             self.assertEqual(1, payload.max_changed_files)
+            self.assertEqual("local-deterministic", payload.model_id)
+            self.assertEqual("repo-editor-v1", payload.agent_id)
+            self.assertEqual("deterministic-repo-editor", payload.model_spec["name"])
+            self.assertEqual("repo_editor", payload.agent_spec["role"])
             self.assertIn("policy_gate_results", payload.output_schema)
+
+    def test_unknown_model_or_agent_is_rejected_before_dispatch(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = self._build_repo(root)
+            flow = self._build_flow(root)
+
+            with self.assertRaises(RequestValidationError):
+                flow.create_job(
+                    JobRequest(
+                        prompt="For my shopping website, create a buy button.",
+                        repo_path=str(repo),
+                        model_id="missing-model",
+                    )
+                )
+
+            with self.assertRaises(RequestValidationError):
+                flow.create_job(
+                    JobRequest(
+                        prompt="For my shopping website, create a buy button.",
+                        repo_path=str(repo),
+                        agent_id="missing-agent",
+                    )
+                )
+
+    def test_model_agent_mismatch_is_rejected_before_dispatch(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = self._build_repo(root)
+            flow = self._build_flow(root)
+
+            with self.assertRaises(RequestValidationError):
+                flow.create_job(
+                    JobRequest(
+                        prompt="For my shopping website, create a buy button.",
+                        repo_path=str(repo),
+                        model_id="gpt-5-coding",
+                        agent_id="repo-editor-v1",
+                    )
+                )
 
     def test_github_worker_payload_uses_github_provider_without_local_path(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -228,6 +277,7 @@ class CloudAgentServiceFlowTests(unittest.TestCase):
             self.assertEqual(f"git://review/agent/{job_id}", result.pr_url)
             self.assertEqual("git", result.evidence["repo_provider"])
             self.assertEqual("file://local-git-remote", result.evidence["git_target"])
+            self.assertEqual("needs_review", result.promotion_decision["status"])
             subprocess.run(
                 ["git", "--git-dir", str(remote), "rev-parse", f"refs/heads/agent/{job_id}"],
                 check=True,
@@ -294,12 +344,14 @@ class CloudAgentServiceFlowTests(unittest.TestCase):
 
             result = flow.run_job(job_id)
             self.assertEqual("ready: manual approval required", result.deployment_status)
+            self.assertEqual("needs_review", result.promotion_decision["status"])
             self.assertFalse((root / "artifacts" / f"{job_id}-deployment.json").exists())
 
             approved = flow.approve_deployment(job_id)
             events = [event["event_type"] for event in flow.store.list_events(job_id)]
 
             self.assertEqual("deployed: local mock deployment recorded", approved.deployment_status)
+            self.assertEqual("promote", approved.promotion_decision["status"])
             self.assertTrue((root / "artifacts" / f"{job_id}-deployment.json").exists())
             self.assertIn("deployment_approved", events)
 
@@ -345,6 +397,7 @@ class CloudAgentServiceFlowTests(unittest.TestCase):
 
             self.assertEqual(JobStatus.FAILED, result.status)
             self.assertEqual("not deployed: budget exceeded", result.deployment_status)
+            self.assertEqual("reject", result.promotion_decision["status"])
             self.assertIn("budget_exceeded", events)
             self.assertIsNone(result.pr_url)
 

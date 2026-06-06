@@ -5,6 +5,8 @@ intended AWS/ECS architecture without creating cloud resources or deploying real
 infrastructure. Local repo jobs use mock PR/deploy artifacts. Generic Git jobs
 clone and push a review branch to `origin`. GitHub repo jobs use the real GitHub
 App clone, branch push, and PR path only when app credentials are configured.
+Each repo update is also a minimal lab run: `ModelSpec` + `AgentSpec` +
+evidence -> `PromotionDecision`.
 
 ## Boundaries
 
@@ -16,6 +18,9 @@ App clone, branch push, and PR path only when app credentials are configured.
   `/integrations/github/status` to report configured before claiming it is live.
 - Treat `local://preview/<job_id>/<file>` as a local preview artifact, not a
   hosted internet URL.
+- Treat `local-deterministic` as the current deterministic model spec; do not
+  claim live external SLM/LLM inference unless an actual provider call is wired
+  and verified.
 - Treat `deployed: local mock deployment recorded` as a local artifact, not a
   production deployment.
 - Do not persist secrets in docs, logs, SQLite data, test fixtures, or examples.
@@ -27,8 +32,8 @@ App clone, branch push, and PR path only when app credentials are configured.
 - `app.py`: FastAPI surface for job creation, status, and health.
 - `pipeline.py`: request validation, prompt upgrade, planning, local workspace
   copy, generic Git clone/sync, GitHub App clone/sync, repo profiling and
-  memory, budget charging, deterministic coding action, tests, gates, preview
-  proof, mock PR sync, and mock deploy.
+  memory, model/agent registry, budget charging, deterministic coding action,
+  tests, gates, preview proof, promotion decision, mock PR sync, and mock deploy.
 - `store.py`: SQLite job and event persistence.
 - `orchestrator.py`: local queue plus persisted queued-job runner.
 - `worker.py`: container-friendly one-job or claim-next entry point.
@@ -113,18 +118,20 @@ A successful local run should emit these core events:
 5. `repo_cloned`
 6. `repo_analyzed`
 7. `repo_memory_loaded`
-8. `prompt_upgraded`
-9. `plan_created`
-10. `dependencies_requested`
-11. `files_changed`
-12. `tests_finished`
-13. `policy_gate_result`
-14. `preview_created`
-15. `browser_proof_finished`
-16. `branch_pushed`
-17. `pr_created_or_updated`
-18. `deployment_finished`
-19. `job_succeeded`
+8. `lab_run_configured`
+9. `prompt_upgraded`
+10. `plan_created`
+11. `dependencies_requested`
+12. `files_changed`
+13. `tests_finished`
+14. `policy_gate_result`
+15. `preview_created`
+16. `browser_proof_finished`
+17. `branch_pushed`
+18. `pr_created_or_updated`
+19. `deployment_finished`
+20. `job_succeeded`
+21. `promotion_decision_created`
 
 If a gate fails, the job must stop before mock PR sync or mock deployment.
 

@@ -60,6 +60,8 @@ def evaluate_buy_button() -> dict[str, object]:
             "browser_buy_button_check": result.evidence.get("browser_checks", {}).get(
                 "buy_button_present", False
             ),
+            "promotion_decision_created": result.promotion_decision.get("status")
+            in {"promote", "needs_review"},
         }
         score = sum(1 for value in checks.values() if value) / len(checks)
         return {
