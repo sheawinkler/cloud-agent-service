@@ -1137,7 +1137,9 @@ class AgentCloudFlow:
         )
         self.store.add_event(job_id, "deployment_finished", {"status": deployment_status})
         self.store.update_job(job_id, result_json=asdict(result))
-        return self._stored_result(self.store.get_job(job_id))
+        stored = self._stored_result(self.store.get_job(job_id))
+        self._record_lab_run(job_id, stored)
+        return stored
 
     def github_status(self) -> GitHubIntegrationStatus:
         return self.github_integration.status()
@@ -1147,7 +1149,9 @@ class AgentCloudFlow:
         if not job:
             raise KeyError(f"unknown job_id: {job_id}")
         if job["status"] in {JobStatus.SUCCEEDED.value, JobStatus.FAILED.value}:
-            return self._stored_result(job)
+            result = self._stored_result(job)
+            self._record_lab_run(job_id, result)
+            return result
         if job["status"] == JobStatus.CANCELLED.value:
             raise RequestValidationError(f"job is cancelled: {job_id}")
 
@@ -1356,6 +1360,7 @@ class AgentCloudFlow:
                 status=JobStatus.SUCCEEDED,
                 result_json=asdict(result),
             )
+            self._record_lab_run(job_id, result)
             return result
         except BudgetExceededError as exc:
             gates = {
@@ -1589,7 +1594,33 @@ class AgentCloudFlow:
             "promotion_decision_created",
             asdict(promotion_decision),
         )
+        self._record_lab_run(job_id, result)
         return result
+
+    def _record_lab_run(self, job_id: str, result: JobResult) -> None:
+        job = self.store.get_job(job_id)
+        if not job:
+            return
+        promotion = result.promotion_decision or {}
+        self.store.upsert_lab_run(
+            {
+                "job_id": job_id,
+                "user_id": job["user_id"],
+                "repo_provider": job["repo_provider"],
+                "model_id": job["model_id"],
+                "agent_id": job["agent_id"],
+                "job_status": result.status.value,
+                "promotion_status": promotion.get("status", "unknown"),
+                "promotion_reason": promotion.get("reason", ""),
+                "deployment_status": result.deployment_status,
+                "changed_files_count": len(result.changed_files),
+                "tests_failed_count": len(result.tests_failed),
+                "token_budget": job["token_budget"],
+                "tokens_used": self.store.budget_tokens_used(job_id),
+                "created_at": job["created_at"],
+                "updated_at": job["updated_at"],
+            }
+        )
 
     def _result(
         self,

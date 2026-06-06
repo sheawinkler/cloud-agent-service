@@ -18,6 +18,7 @@ the deploy boundary when evidence is weak.
 | Repo intelligence | The service knows what kind of repo it is editing. | `repo_analyzed` records framework, package manager, and test hints. |
 | Repo memory | Follow-up jobs can reuse prior repo context. | `repo_memory_loaded` is emitted and `repo_memory` records the last profile. |
 | Model/agent tracking | A repo update is attributable to a specific lab config. | Worker payload and result evidence include `ModelSpec` and `AgentSpec`. |
+| Lab history | Model/agent runs can be compared across jobs. | `lab_runs` records terminal runs and `/lab/summary` groups promotions. |
 | Safety | Failed tests or policies stop sync/deploy. | Gate failure returns `failed` before mock PR/deploy. |
 | Preview proof | Reviewers get inspectable evidence before deploy. | Final result includes preview URL, preview artifact, and browser-proof checks. |
 | Promotion decision | The run has a clear model/agent verdict. | Final result returns `promote`, `reject`, or `needs_review` with evidence. |
@@ -112,6 +113,11 @@ the deploy boundary when evidence is weak.
     - Expected: worker payload and final evidence include model/agent specs,
       and the result includes a promotion decision.
 
+14. Lab run summary
+    - Run successful, review-required, and failed jobs.
+    - Expected: `/lab/runs` lists terminal runs and `/lab/summary` reports
+      promotion counts by status and by model/agent pair.
+
 ## Evidence To Show In A Demo
 
 The demo should make these proof points visible without much narration:
@@ -142,7 +148,8 @@ promotion_decision_created
 The service should be considered not production-ready until real deployment
 integration, auth, multi-tenant quotas, durable cloud storage, and ECS/Fargate
 worker dispatch replace the local defaults. The model/agent lab layer records
-run metadata and deterministic promotion decisions; it does not yet train,
-fine-tune, or call external SLM/LLM providers. Generic Git sync is provider
+run metadata and deterministic promotion decisions, and `lab_runs` makes those
+decisions queryable for comparison; it does not yet train, fine-tune, or call
+external SLM/LLM providers. Generic Git sync is provider
 agnostic, while GitHub PR creation is implemented only for `repo_provider=github`
 when app credentials are configured and verified.

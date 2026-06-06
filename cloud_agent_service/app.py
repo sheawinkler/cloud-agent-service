@@ -11,7 +11,7 @@ from fastapi import BackgroundTasks, FastAPI, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
-from cloud_agent_service.models import DeploymentPolicy, JobRequest, RepoProvider
+from cloud_agent_service.models import DeploymentPolicy, JobRequest, PromotionStatus, RepoProvider
 from cloud_agent_service.orchestrator import LocalJobQueue, LocalOrchestrator
 from cloud_agent_service.pipeline import AgentCloudFlow, RequestValidationError
 from cloud_agent_service.store import JobStore
@@ -91,6 +91,28 @@ def run_code_job(payload: CreateJobPayload) -> dict[str, Any]:
 @app.get("/jobs")
 def list_jobs(limit: int = 50, user_id: str | None = None) -> dict[str, Any]:
     return {"jobs": flow.store.list_jobs(limit=limit, user_id=user_id)}
+
+
+@app.get("/lab/runs")
+def list_lab_runs(
+    limit: int = 50,
+    model_id: str | None = None,
+    agent_id: str | None = None,
+    promotion_status: PromotionStatus | None = None,
+) -> dict[str, Any]:
+    return {
+        "runs": flow.store.list_lab_runs(
+            limit=limit,
+            model_id=model_id,
+            agent_id=agent_id,
+            promotion_status=promotion_status.value if promotion_status else None,
+        )
+    }
+
+
+@app.get("/lab/summary")
+def lab_summary() -> dict[str, Any]:
+    return flow.store.lab_summary()
 
 
 @app.post("/jobs/run-next")

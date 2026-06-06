@@ -95,6 +95,40 @@ class JobStore:
                     )
                     """
                 )
+                conn.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS lab_runs (
+                        job_id TEXT PRIMARY KEY,
+                        user_id TEXT NOT NULL,
+                        repo_provider TEXT NOT NULL,
+                        model_id TEXT NOT NULL,
+                        agent_id TEXT NOT NULL,
+                        job_status TEXT NOT NULL,
+                        promotion_status TEXT NOT NULL,
+                        promotion_reason TEXT NOT NULL,
+                        deployment_status TEXT NOT NULL,
+                        changed_files_count INTEGER NOT NULL,
+                        tests_failed_count INTEGER NOT NULL,
+                        token_budget INTEGER NOT NULL,
+                        tokens_used INTEGER NOT NULL,
+                        created_at TEXT NOT NULL,
+                        updated_at TEXT NOT NULL,
+                        FOREIGN KEY(job_id) REFERENCES jobs(job_id)
+                    )
+                    """
+                )
+                conn.execute(
+                    """
+                    CREATE INDEX IF NOT EXISTS idx_lab_runs_model_agent_status
+                    ON lab_runs (model_id, agent_id, promotion_status)
+                    """
+                )
+                conn.execute(
+                    """
+                    CREATE INDEX IF NOT EXISTS idx_lab_runs_updated_at
+                    ON lab_runs (updated_at)
+                    """
+                )
                 self._ensure_job_columns(conn)
 
     def _ensure_job_columns(self, conn: sqlite3.Connection) -> None:
@@ -251,10 +285,116 @@ class JobStore:
                     (job_id, stage, token_delta, runtime_seconds, note, utc_now()),
                 )
 
+    def upsert_lab_run(self, run: dict[str, Any]) -> None:
+        with closing(self._connect()) as conn:
+            with conn:
+                conn.execute(
+                    """
+                    INSERT INTO lab_runs (
+                        job_id, user_id, repo_provider, model_id, agent_id,
+                        job_status, promotion_status, promotion_reason,
+                        deployment_status, changed_files_count, tests_failed_count,
+                        token_budget, tokens_used, created_at, updated_at
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(job_id) DO UPDATE SET
+                        user_id = excluded.user_id,
+                        repo_provider = excluded.repo_provider,
+                        model_id = excluded.model_id,
+                        agent_id = excluded.agent_id,
+                        job_status = excluded.job_status,
+                        promotion_status = excluded.promotion_status,
+                        promotion_reason = excluded.promotion_reason,
+                        deployment_status = excluded.deployment_status,
+                        changed_files_count = excluded.changed_files_count,
+                        tests_failed_count = excluded.tests_failed_count,
+                        token_budget = excluded.token_budget,
+                        tokens_used = excluded.tokens_used,
+                        updated_at = excluded.updated_at
+                    """,
+                    (
+                        run["job_id"],
+                        run["user_id"],
+                        run["repo_provider"],
+                        run["model_id"],
+                        run["agent_id"],
+                        run["job_status"],
+                        run["promotion_status"],
+                        run["promotion_reason"],
+                        run["deployment_status"],
+                        run["changed_files_count"],
+                        run["tests_failed_count"],
+                        run["token_budget"],
+                        run["tokens_used"],
+                        run["created_at"],
+                        run["updated_at"],
+                    ),
+                )
+
     def get_job(self, job_id: str) -> dict[str, Any] | None:
         with closing(self._connect()) as conn:
             row = conn.execute("SELECT * FROM jobs WHERE job_id = ?", (job_id,)).fetchone()
         return self._row_to_dict(row) if row else None
+
+    def get_lab_run(self, job_id: str) -> dict[str, Any] | None:
+        with closing(self._connect()) as conn:
+            row = conn.execute("SELECT * FROM lab_runs WHERE job_id = ?", (job_id,)).fetchone()
+        return dict(row) if row else None
+
+    def list_lab_runs(
+        self,
+        limit: int = 50,
+        model_id: str | None = None,
+        agent_id: str | None = None,
+        promotion_status: str | None = None,
+    ) -> list[dict[str, Any]]:
+        limit = max(1, min(limit, 200))
+        query = "SELECT * FROM lab_runs"
+        filters = []
+        params: list[Any] = []
+        if model_id:
+            filters.append("model_id = ?")
+            params.append(model_id)
+        if agent_id:
+            filters.append("agent_id = ?")
+            params.append(agent_id)
+        if promotion_status:
+            filters.append("promotion_status = ?")
+            params.append(promotion_status)
+        if filters:
+            query += " WHERE " + " AND ".join(filters)
+        query += " ORDER BY updated_at DESC LIMIT ?"
+        params.append(limit)
+        with closing(self._connect()) as conn:
+            rows = conn.execute(query, params).fetchall()
+        return [dict(row) for row in rows]
+
+    def lab_summary(self) -> dict[str, Any]:
+        with closing(self._connect()) as conn:
+            total = conn.execute("SELECT COUNT(*) AS total FROM lab_runs").fetchone()["total"]
+            by_status_rows = conn.execute(
+                """
+                SELECT promotion_status, COUNT(*) AS count
+                FROM lab_runs
+                GROUP BY promotion_status
+                ORDER BY promotion_status
+                """
+            ).fetchall()
+            by_model_agent_rows = conn.execute(
+                """
+                SELECT model_id, agent_id, promotion_status, COUNT(*) AS count
+                FROM lab_runs
+                GROUP BY model_id, agent_id, promotion_status
+                ORDER BY model_id, agent_id, promotion_status
+                """
+            ).fetchall()
+        return {
+            "total_runs": int(total),
+            "by_promotion_status": {
+                row["promotion_status"]: int(row["count"]) for row in by_status_rows
+            },
+            "by_model_agent": [dict(row) for row in by_model_agent_rows],
+        }
 
     def list_jobs(self, limit: int = 50, user_id: str | None = None) -> list[dict[str, Any]]:
         limit = max(1, min(limit, 200))

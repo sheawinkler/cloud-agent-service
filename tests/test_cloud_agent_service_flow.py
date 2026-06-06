@@ -127,6 +127,25 @@ class CloudAgentServiceFlowTests(unittest.TestCase):
                 (root / "artifacts" / "previews" / job_id / "browser-proof.json").exists()
             )
             self.assertGreater(flow.store.budget_tokens_used(job_id), 0)
+            lab_run = flow.store.get_lab_run(job_id)
+            self.assertEqual("local-deterministic", lab_run["model_id"])
+            self.assertEqual("repo-editor-v1", lab_run["agent_id"])
+            self.assertEqual("promote", lab_run["promotion_status"])
+            self.assertEqual(1, lab_run["changed_files_count"])
+            summary = flow.store.lab_summary()
+            self.assertEqual(1, summary["total_runs"])
+            self.assertEqual(1, summary["by_promotion_status"]["promote"])
+            self.assertEqual(
+                [
+                    {
+                        "model_id": "local-deterministic",
+                        "agent_id": "repo-editor-v1",
+                        "promotion_status": "promote",
+                        "count": 1,
+                    }
+                ],
+                summary["by_model_agent"],
+            )
 
             expected_events = {
                 "job_created",
@@ -345,6 +364,7 @@ class CloudAgentServiceFlowTests(unittest.TestCase):
             result = flow.run_job(job_id)
             self.assertEqual("ready: manual approval required", result.deployment_status)
             self.assertEqual("needs_review", result.promotion_decision["status"])
+            self.assertEqual("needs_review", flow.store.get_lab_run(job_id)["promotion_status"])
             self.assertFalse((root / "artifacts" / f"{job_id}-deployment.json").exists())
 
             approved = flow.approve_deployment(job_id)
@@ -352,6 +372,7 @@ class CloudAgentServiceFlowTests(unittest.TestCase):
 
             self.assertEqual("deployed: local mock deployment recorded", approved.deployment_status)
             self.assertEqual("promote", approved.promotion_decision["status"])
+            self.assertEqual("promote", flow.store.get_lab_run(job_id)["promotion_status"])
             self.assertTrue((root / "artifacts" / f"{job_id}-deployment.json").exists())
             self.assertIn("deployment_approved", events)
 
@@ -398,6 +419,7 @@ class CloudAgentServiceFlowTests(unittest.TestCase):
             self.assertEqual(JobStatus.FAILED, result.status)
             self.assertEqual("not deployed: budget exceeded", result.deployment_status)
             self.assertEqual("reject", result.promotion_decision["status"])
+            self.assertEqual("reject", flow.store.get_lab_run(job_id)["promotion_status"])
             self.assertIn("budget_exceeded", events)
             self.assertIsNone(result.pr_url)
 

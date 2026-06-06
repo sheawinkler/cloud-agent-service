@@ -45,6 +45,7 @@ evidence -> `PromotionDecision`.
 - `scripts/smoke_api.py`: standard-library smoke suite for the live API.
 - `EVALUATION.md`: criteria for judging product and operational readiness.
 - `examples/agent_contract.json`: example job payload and final result contract.
+  Terminal jobs are indexed in `lab_runs` for model/agent promotion summaries.
 
 ## Run
 
@@ -98,6 +99,8 @@ curl -sS http://127.0.0.1:8000/jobs/<job_id>
 curl -sS http://127.0.0.1:8000/jobs/<job_id>/worker-payload
 curl -sS http://127.0.0.1:8000/jobs/<job_id>/budget
 curl -sS http://127.0.0.1:8000/jobs/<job_id>/events
+curl -sS http://127.0.0.1:8000/lab/runs
+curl -sS http://127.0.0.1:8000/lab/summary
 python -m cloud_agent_service.worker --claim-next
 ```
 

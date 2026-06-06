@@ -8,7 +8,7 @@ policy handling.
 It also includes the cloud-ready operational boundaries needed before real
 AWS/Git rollout: durable queue claiming, worker payloads, budget ledger, event
 streaming, repo profiling, repo memory, model/agent run metadata, approval
-gates, continuation, and evaluation.
+gates, continuation, lab-run summaries, and evaluation.
 
 Local repo jobs still use mock PR and deployment artifacts. Generic Git jobs
 clone from `git_url` and push an agent branch back to `origin`. GitHub repo jobs
@@ -94,6 +94,7 @@ Monitoring:
 13. Record the model/agent config that produced the change.
 14. Return final status with events, changed files, checks, evidence, PR URL,
     deployment status, and promotion decision.
+15. Index terminal runs for lab history and model/agent promotion summaries.
 
 ## Model And Agent Lab Layer
 
@@ -106,6 +107,10 @@ Every job carries a small lab contract:
 The default `local-deterministic` model and `repo-editor-v1` agent are explicit
 so the deterministic MVP can be compared against future external SLM/LLM-backed
 agents without changing the repo dispatch contract.
+
+Terminal jobs are also written to a `lab_runs` index. This makes promotion
+outcomes queryable by model, agent, and status instead of burying them inside
+individual job payloads.
 
 ## Simple Demo
 
@@ -187,6 +192,14 @@ List recent jobs:
 
 ```bash
 curl -sS http://127.0.0.1:8000/jobs
+```
+
+List lab runs and summarize promotion outcomes:
+
+```bash
+curl -sS http://127.0.0.1:8000/lab/runs
+curl -sS 'http://127.0.0.1:8000/lab/runs?model_id=local-deterministic&promotion_status=promote'
+curl -sS http://127.0.0.1:8000/lab/summary
 ```
 
 Inspect the worker payload that would be handed to an ECS/Fargate task:
@@ -334,6 +347,7 @@ Artifacts include:
 - `jobs.sqlite3`: job and event state.
 - `budget_ledger`: token/runtime accounting table inside SQLite.
 - `repo_memory`: per-repo last-run profile and summary inside SQLite.
+- `lab_runs`: terminal run index for model/agent promotion summaries.
 - `workspaces/<job_id>/repo`: isolated copied repo workspace.
 - `artifacts/<job_id>-pr.json`: mock PR payload.
 - `artifacts/<job_id>-deployment.json`: mock deployment payload.
@@ -378,8 +392,8 @@ python3 scripts/smoke_api.py --base-url http://127.0.0.1:8000 --repo-path /host_
 
 The API smoke covers health, GitHub integration status, worker payload, job run,
 budget ledger, event list, SSE stream, manual deployment approval, one-click
-run, continuation, model/agent payload fields, promotion decision, and
-budget-stop failure.
+run, continuation, model/agent payload fields, lab-run list and summary,
+promotion decision, and budget-stop failure.
 
 ## Evaluation And Contracts
 

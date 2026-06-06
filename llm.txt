@@ -7,6 +7,8 @@ accepts a user request, validates it, upgrades the prompt, creates a job, runs a
 repo-editing agent workflow, tests changes, applies policy gates, records
 evidence, and syncs review output through local mock, generic Git, or GitHub App
 paths.
+Terminal runs are indexed in `lab_runs` so model/agent promotion outcomes can be
+queried and summarized.
 
 Important boundary:
 The current implementation does not call AWS and does not perform a real
@@ -68,3 +70,8 @@ Do not:
 - Commit runtime SQLite databases, generated workspaces, or artifacts.
 - Add package dependencies without updating the allowlist and tests.
 - Log or persist secrets.
+
+Useful API reads:
+- GET /lab/runs
+- GET /lab/runs?model_id=local-deterministic&promotion_status=promote
+- GET /lab/summary

@@ -142,6 +142,29 @@ def run_smoke(base_url: str, repo_path: str) -> dict[str, Any]:
         deployment_status=approved["deployment_status"],
     )
 
+    lab_runs = client.get("/lab/runs?promotion_status=promote")
+    record(
+        results,
+        "lab_runs",
+        any(
+            run["job_id"] == job_id
+            and run["model_id"] == "local-deterministic"
+            and run["agent_id"] == "repo-editor-v1"
+            and run["promotion_status"] == "promote"
+            for run in lab_runs["runs"]
+        ),
+        returned=len(lab_runs["runs"]),
+    )
+
+    lab_summary = client.get("/lab/summary")
+    record(
+        results,
+        "lab_summary",
+        lab_summary["total_runs"] >= 1
+        and lab_summary["by_promotion_status"].get("promote", 0) >= 1,
+        response=lab_summary,
+    )
+
     one_click = client.post(
         "/run-code-job",
         {
