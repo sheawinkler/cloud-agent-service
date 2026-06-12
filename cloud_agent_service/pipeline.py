@@ -60,6 +60,10 @@ ALLOWED_SHELL_COMMANDS = [
 ]
 
 
+def _truthy_env(name: str) -> bool:
+    return os.environ.get(name, "").strip().lower() in {"1", "true", "yes", "on"}
+
+
 class RequestValidationError(ValueError):
     pass
 
@@ -76,6 +80,97 @@ class GitProviderError(RuntimeError):
     pass
 
 
+class OpenAIProviderError(RuntimeError):
+    pass
+
+
+class OpenAIResponsesClient:
+    def __init__(
+        self,
+        api_key: str | None = None,
+        model: str | None = None,
+        api_url: str | None = None,
+        enabled: bool | None = None,
+    ) -> None:
+        self.api_key = api_key if api_key is not None else os.environ.get("OPENAI_API_KEY", "")
+        self.model = model or os.environ.get("OPENAI_RESPONSES_MODEL") or os.environ.get(
+            "OPENAI_MODEL",
+            "gpt-5.5",
+        )
+        self.api_url = (api_url or os.environ.get("OPENAI_API_URL", "https://api.openai.com/v1")).rstrip(
+            "/"
+        )
+        self.enabled = (
+            _truthy_env("AGENT_CLOUD_ENABLE_OPENAI_AGENT") if enabled is None else enabled
+        )
+
+    def status(self) -> dict[str, Any]:
+        missing = []
+        if not self.enabled:
+            missing.append("AGENT_CLOUD_ENABLE_OPENAI_AGENT")
+        if not self.api_key:
+            missing.append("OPENAI_API_KEY")
+        return {
+            "configured": self.enabled and bool(self.api_key),
+            "provider": "openai-responses",
+            "model": self.model,
+            "mode": "ready" if self.enabled and self.api_key else "disabled",
+            "missing": missing,
+        }
+
+    def create_text(self, instructions: str, input_text: str) -> dict[str, Any]:
+        status = self.status()
+        if not status["configured"]:
+            missing = ", ".join(status["missing"])
+            raise OpenAIProviderError(
+                f"OpenAI Responses runtime is not configured; missing: {missing}"
+            )
+
+        body = {
+            "model": self.model,
+            "instructions": instructions,
+            "input": input_text,
+            "store": False,
+        }
+        request = urllib.request.Request(
+            self.api_url + "/responses",
+            data=json.dumps(body).encode("utf-8"),
+            headers={
+                "authorization": f"Bearer {self.api_key}",
+                "content-type": "application/json",
+                "user-agent": "cloud-agent-service",
+            },
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=60) as response:
+                payload = json.loads(response.read().decode("utf-8"))
+        except urllib.error.HTTPError as exc:
+            detail = exc.read().decode("utf-8")
+            raise OpenAIProviderError(
+                f"OpenAI Responses API failed with {exc.code}: {detail}"
+            ) from exc
+
+        return {
+            "response_id": payload.get("id"),
+            "model": payload.get("model", self.model),
+            "output_text": self._output_text(payload),
+        }
+
+    @staticmethod
+    def _output_text(payload: dict[str, Any]) -> str:
+        if isinstance(payload.get("output_text"), str):
+            return payload["output_text"]
+        parts: list[str] = []
+        for item in payload.get("output", []):
+            if not isinstance(item, dict):
+                continue
+            for content in item.get("content", []):
+                if isinstance(content, dict) and isinstance(content.get("text"), str):
+                    parts.append(content["text"])
+        return "\n".join(parts).strip()
+
+
 class ModelAgentRegistry:
     def __init__(self) -> None:
         self.models = {
@@ -90,7 +185,7 @@ class ModelAgentRegistry:
             "gpt-5-coding": ModelSpec(
                 model_id="gpt-5-coding",
                 provider="openai",
-                name="gpt-5-coding",
+                name=os.environ.get("OPENAI_RESPONSES_MODEL", "gpt-5.5"),
                 context_window=128_000,
                 cost_tier="external-api",
                 supports_tools=True,
@@ -111,6 +206,13 @@ class ModelAgentRegistry:
                 allowed_shell_commands=["git", "python3", "pytest", "ruff"],
                 output_contract="promotion_decision.v1",
             ),
+            "openai-repo-editor-v1": AgentSpec(
+                agent_id="openai-repo-editor-v1",
+                role="repo_editor",
+                model_id="gpt-5-coding",
+                allowed_shell_commands=["git", "python3", "pytest", "ruff"],
+                output_contract="job_result.v1",
+            ),
         }
 
     def validate(self, request: JobRequest) -> None:
@@ -129,6 +231,12 @@ class ModelAgentRegistry:
 
     def agent(self, agent_id: str) -> AgentSpec:
         return self.agents[agent_id]
+
+    def list_models(self) -> list[ModelSpec]:
+        return list(self.models.values())
+
+    def list_agents(self) -> list[AgentSpec]:
+        return list(self.agents.values())
 
 
 class RequestValidator:
@@ -230,6 +338,7 @@ class Planner:
                 "pr_url": "str|null",
                 "deployment_status": "str",
                 "residual_risks": "list[str]",
+                "evidence": "dict[str, object]",
                 "promotion_decision": "dict[str, object]",
             },
         )
@@ -992,6 +1101,7 @@ class AgentCloudFlow:
         self.repo_connector = LocalRepoConnector()
         self.git_repo_connector = GitRepoConnector()
         self.github_client = GitHubAppClient()
+        self.openai_client = OpenAIResponsesClient()
         self.github_repo_connector = GitHubRepoConnector(self.github_client)
         self.repo_analyzer = RepoAnalyzer()
         self.dependency_installer = DependencyInstaller()
@@ -1144,6 +1254,30 @@ class AgentCloudFlow:
     def github_status(self) -> GitHubIntegrationStatus:
         return self.github_integration.status()
 
+    def model_agent_status(self) -> dict[str, Any]:
+        provider_status = {
+            "local": {"configured": True, "provider": "local", "mode": "ready", "missing": []},
+            "openai": self.openai_client.status(),
+        }
+        return {
+            "models": [
+                {
+                    **asdict(model),
+                    "runtime": provider_status.get(
+                        model.provider,
+                        {
+                            "configured": False,
+                            "provider": model.provider,
+                            "mode": "unknown",
+                            "missing": [],
+                        },
+                    ),
+                }
+                for model in self.lab_registry.list_models()
+            ],
+            "agents": [asdict(agent) for agent in self.lab_registry.list_agents()],
+        }
+
     def run_job(self, job_id: str) -> JobResult:
         job = self.store.get_job(job_id)
         if not job:
@@ -1240,6 +1374,16 @@ class AgentCloudFlow:
             self.store.update_job(job_id, normalized_prompt=normalized.brief)
             self.store.add_event(job_id, "prompt_upgraded", asdict(normalized))
             self.store.add_event(job_id, "plan_created", asdict(plan))
+            model_advice = self._maybe_model_advice(
+                request,
+                model_spec,
+                agent_spec,
+                repo_profile,
+                normalized,
+                plan,
+            )
+            if model_advice:
+                self.store.add_event(job_id, "model_inference_finished", model_advice)
 
             modules = self.dependency_installer.requested_modules(plan)
             install_command = self.dependency_installer.install_command(modules)
@@ -1484,6 +1628,46 @@ class AgentCloudFlow:
             ),
             evidence=base_evidence,
         )
+
+    def _maybe_model_advice(
+        self,
+        request: JobRequest,
+        model_spec: ModelSpec,
+        agent_spec: AgentSpec,
+        repo_profile: RepoProfile,
+        normalized: NormalizedPrompt,
+        plan: AgentPlan,
+    ) -> dict[str, Any] | None:
+        if model_spec.provider != "openai":
+            return None
+        instructions = (
+            "You are the model-backed planning step for a cloud repo-editing agent. "
+            "Return concise JSON with keys: task_summary, target_files, tests, risks. "
+            "Do not include secrets or prose outside JSON."
+        )
+        input_text = json.dumps(
+            {
+                "model_id": request.model_id,
+                "agent_id": request.agent_id,
+                "agent_role": agent_spec.role,
+                "prompt": normalized.brief,
+                "acceptance_criteria": plan.acceptance_criteria,
+                "repo_profile": asdict(repo_profile),
+                "expected_files_or_areas": plan.expected_files_or_areas,
+            },
+            sort_keys=True,
+        )
+        try:
+            response = self.openai_client.create_text(instructions, input_text)
+        except OpenAIProviderError as exc:
+            raise RequestValidationError(str(exc)) from exc
+        output_text = response["output_text"]
+        return {
+            "provider": "openai-responses",
+            "model": response["model"],
+            "response_id": response["response_id"],
+            "output_preview": output_text[:1_000],
+        }
 
     @staticmethod
     def _safe_git_target(git_url: str | None) -> str | None:

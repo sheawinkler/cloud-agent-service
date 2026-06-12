@@ -4,6 +4,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from cloud_agent_service.cloud_dispatch import EcsDispatchPlanner
 from cloud_agent_service.models import DeploymentPolicy, JobRequest, JobStatus, RepoProvider
 from cloud_agent_service.pipeline import (
     AgentCloudFlow,
@@ -513,6 +514,101 @@ class CloudAgentServiceFlowTests(unittest.TestCase):
 
             self.assertTrue(status.configured)
             self.assertEqual("ready", status.mode)
+
+    def test_user_usage_tracks_reserved_budget_and_used_tokens(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = self._build_repo(root)
+            flow = self._build_flow(root)
+            job_id = flow.create_job(
+                JobRequest(
+                    prompt="For my shopping website, create a buy button.",
+                    repo_path=str(repo),
+                    deploy_policy=DeploymentPolicy.LOCAL,
+                    token_budget=3000,
+                )
+            )
+
+            flow.run_job(job_id)
+            usage = flow.store.user_usage("local-user")
+
+            self.assertEqual("local-user", usage["user_id"])
+            self.assertEqual(1, usage["jobs_count"])
+            self.assertEqual(0, usage["active_jobs_count"])
+            self.assertEqual(3000, usage["token_budget_reserved"])
+            self.assertGreater(usage["tokens_used"], 0)
+
+    def test_cloud_dispatch_plan_builds_ecs_run_task_contract(self):
+        with tempfile.TemporaryDirectory() as tmp, patch.dict(
+            "os.environ",
+            {
+                "AGENT_CLOUD_ECS_CLUSTER": "agent-cluster",
+                "AGENT_CLOUD_ECS_TASK_DEFINITION": "agent-task:1",
+                "AGENT_CLOUD_ECS_SUBNETS": "subnet-a,subnet-b",
+                "AGENT_CLOUD_ECS_SECURITY_GROUPS": "sg-1",
+                "AGENT_CLOUD_ECS_CONTAINER_NAME": "worker",
+                "AWS_REGION": "us-west-2",
+            },
+        ):
+            root = Path(tmp)
+            repo = self._build_repo(root)
+            flow = self._build_flow(root)
+            job_id = flow.create_job(
+                JobRequest(
+                    prompt="For my shopping website, create a buy button.",
+                    repo_path=str(repo),
+                )
+            )
+            payload = flow.build_worker_payload(job_id)
+
+            plan = EcsDispatchPlanner().build_run_task_request(payload)
+
+            request = plan["run_task_request"]
+            self.assertEqual("aws-ecs", plan["provider"])
+            self.assertEqual("dry-run-contract", plan["mode"])
+            self.assertEqual("agent-cluster", request["cluster"])
+            self.assertEqual("agent-task:1", request["taskDefinition"])
+            awsvpc_config = request["networkConfiguration"]["awsvpcConfiguration"]
+            container = request["overrides"]["containerOverrides"][0]
+            self.assertEqual(["subnet-a", "subnet-b"], awsvpc_config["subnets"])
+            self.assertEqual("worker", container["name"])
+            self.assertIn("--job-id", container["command"])
+
+    def test_cloud_dispatch_status_reports_missing_ecs_configuration(self):
+        with patch.dict("os.environ", {}, clear=True):
+            status = EcsDispatchPlanner().status()
+
+            self.assertFalse(status["configured"])
+            self.assertIn("AGENT_CLOUD_ECS_CLUSTER", status["missing"])
+
+    def test_openai_model_agent_path_requires_explicit_runtime_enablement(self):
+        with tempfile.TemporaryDirectory() as tmp, patch.dict(
+            "os.environ",
+            {
+                "AGENT_CLOUD_ENABLE_OPENAI_AGENT": "",
+                "OPENAI_API_KEY": "",
+            },
+        ):
+            root = Path(tmp)
+            repo = self._build_repo(root)
+            flow = self._build_flow(root)
+            job_id = flow.create_job(
+                JobRequest(
+                    prompt="For my shopping website, create a buy button.",
+                    repo_path=str(repo),
+                    model_id="gpt-5-coding",
+                    agent_id="openai-repo-editor-v1",
+                )
+            )
+
+            with self.assertRaises(RequestValidationError):
+                flow.run_job(job_id)
+
+            status = flow.model_agent_status()
+            openai_model = next(
+                model for model in status["models"] if model["model_id"] == "gpt-5-coding"
+            )
+            self.assertFalse(openai_model["runtime"]["configured"])
 
     def test_dependency_installer_keeps_allowlist_explicit(self):
         with tempfile.TemporaryDirectory() as tmp:

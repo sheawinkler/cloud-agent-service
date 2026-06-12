@@ -50,6 +50,24 @@ class PromotionStatus(StrEnum):
 
 
 @dataclass(frozen=True)
+class TaskCase:
+    task_id: str
+    prompt: str
+    deploy_policy: DeploymentPolicy = DeploymentPolicy.MANUAL
+    expected_job_status: JobStatus = JobStatus.SUCCEEDED
+    expected_promotion_status: PromotionStatus = PromotionStatus.NEEDS_REVIEW
+    expected_changed_files: list[str] = field(default_factory=list)
+    token_budget: int = 8_000
+    max_changed_files: int = 12
+
+
+@dataclass(frozen=True)
+class TaskSuite:
+    suite_id: str
+    cases: list[TaskCase]
+
+
+@dataclass(frozen=True)
 class JobRequest:
     prompt: str
     repo_path: str = ""

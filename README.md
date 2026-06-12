@@ -8,7 +8,8 @@ policy handling.
 It also includes the cloud-ready operational boundaries needed before real
 AWS/Git rollout: durable queue claiming, worker payloads, budget ledger, event
 streaming, repo profiling, repo memory, model/agent run metadata, approval
-gates, continuation, lab-run summaries, and evaluation.
+gates, continuation, lab-run summaries, task-suite evaluation, optional
+API-key/usage controls, and an ECS dry-run dispatch contract.
 
 Local repo jobs still use mock PR and deployment artifacts. Generic Git jobs
 clone from `git_url` and push an agent branch back to `origin`. GitHub repo jobs
@@ -67,6 +68,7 @@ Monitoring:
 - `store.py`: SQLite job and event persistence.
 - `orchestrator.py`: local in-memory queue plus persisted queued-job runner.
 - `worker.py`: container-friendly single-job or claim-next entry point.
+- `cloud_dispatch.py`: AWS ECS/Fargate dry-run dispatch request builder.
 - `Dockerfile.api`: API container.
 - `Dockerfile.agent`: worker container.
 - `compose.yaml`: local API/worker build configuration.
@@ -75,6 +77,7 @@ Monitoring:
 - `examples/agent_contract.json`: example worker payload and final result shape.
 - `demo.sh`: one-command local demo.
 - `scripts/demo_local_flow.py`: no-cloud, no-Docker proof path.
+- `scripts/evaluate_task_suite.py`: multi-run task-suite evaluator.
 - `llm.txt`: compact orientation file for LLM agents.
 
 ## What The MVP Proves
@@ -95,6 +98,7 @@ Monitoring:
 14. Return final status with events, changed files, checks, evidence, PR URL,
     deployment status, and promotion decision.
 15. Index terminal runs for lab history and model/agent promotion summaries.
+16. Expose model/runtime status, user quota usage, and cloud dispatch contracts.
 
 ## Model And Agent Lab Layer
 
@@ -111,6 +115,12 @@ agents without changing the repo dispatch contract.
 Terminal jobs are also written to a `lab_runs` index. This makes promotion
 outcomes queryable by model, agent, and status instead of burying them inside
 individual job payloads.
+
+An OpenAI Responses-backed model path is available through the
+`gpt-5-coding` model and `openai-repo-editor-v1` agent. It is disabled by
+default and requires both `AGENT_CLOUD_ENABLE_OPENAI_AGENT=1` and
+`OPENAI_API_KEY`; otherwise the run fails as a configuration error instead of
+silently falling back to the deterministic model.
 
 ## Simple Demo
 
@@ -142,6 +152,8 @@ Compile and test:
 ```bash
 python3 -m compileall cloud_agent_service scripts tests
 ./demo.sh
+python3 scripts/evaluate_mvp.py
+python3 scripts/evaluate_task_suite.py
 python3 -m unittest tests.test_cloud_agent_service_flow
 python3 -m unittest discover -s tests
 ```
@@ -200,12 +212,21 @@ List lab runs and summarize promotion outcomes:
 curl -sS http://127.0.0.1:8000/lab/runs
 curl -sS 'http://127.0.0.1:8000/lab/runs?model_id=local-deterministic&promotion_status=promote'
 curl -sS http://127.0.0.1:8000/lab/summary
+open http://127.0.0.1:8000/lab
+curl -sS http://127.0.0.1:8000/models
 ```
 
 Inspect the worker payload that would be handed to an ECS/Fargate task:
 
 ```bash
 curl -sS http://127.0.0.1:8000/jobs/<job_id>/worker-payload
+```
+
+Inspect the dry-run ECS request shape. This does not call AWS:
+
+```bash
+curl -sS http://127.0.0.1:8000/integrations/cloud/status
+curl -sS http://127.0.0.1:8000/jobs/<job_id>/cloud-dispatch-plan
 ```
 
 Run the next persisted queued job without relying on the API process memory:
@@ -249,6 +270,15 @@ Check whether real GitHub App credentials are configured:
 
 ```bash
 curl -sS http://127.0.0.1:8000/integrations/github/status
+```
+
+Optional local API-key enforcement and per-user token-budget quota:
+
+```bash
+export AGENT_CLOUD_API_KEYS="dev-key"
+export AGENT_CLOUD_USER_TOKEN_QUOTA=20000
+curl -sS http://127.0.0.1:8000/auth/status
+curl -sS http://127.0.0.1:8000/users/local-user/quota
 ```
 
 ## Git Jobs

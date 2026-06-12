@@ -9,12 +9,16 @@ evidence, and syncs review output through local mock, generic Git, or GitHub App
 paths.
 Terminal runs are indexed in `lab_runs` so model/agent promotion outcomes can be
 queried and summarized.
+Task suites, runtime status, optional auth/quotas, a lab UI, and ECS dry-run
+dispatch plans are present as productization scaffolding.
 
 Important boundary:
 The current implementation does not call AWS and does not perform a real
 deployment. Local PR and deployment outputs are artifacts used to prove the
 control flow. Generic Git jobs push review branches to origin. GitHub App jobs
 require app credentials before claiming live clone/push/PR behavior.
+OpenAI Responses-backed agent runs require explicit enablement and an API key;
+the default path is still deterministic and offline.
 
 Mirendil framing:
 Treat each repo update as a minimal model lab run: ModelSpec + AgentSpec +
@@ -28,17 +32,22 @@ Primary files:
 - store.py: SQLite job and event storage.
 - orchestrator.py: local queue and runner.
 - worker.py: one-job container entry point.
+- cloud_dispatch.py: ECS/Fargate dry-run dispatch request builder.
 - compose.yaml: Docker Compose for local API/worker builds.
 - EVALUATION.md: product and operational evaluation criteria.
 - examples/agent_contract.json: worker payload and final result example.
 - demo.sh: one-command local demo.
 - scripts/demo_local_flow.py: no-cloud happy path demo.
+- scripts/evaluate_mvp.py: single golden task evaluator.
+- scripts/evaluate_task_suite.py: multi-run lab evaluator.
 - scripts/install_allowed_modules.sh: dependency allowlist installer.
 - tests/test_cloud_agent_service_flow.py: deterministic flow tests.
 
 Run commands:
 - python3 -m compileall cloud_agent_service scripts tests
 - ./demo.sh
+- python3 scripts/evaluate_mvp.py
+- python3 scripts/evaluate_task_suite.py
 - python3 -m unittest tests.test_cloud_agent_service_flow
 - python3 -m unittest discover -s tests
 - docker --context orbstack compose -f compose.yaml up -d --build api
@@ -48,6 +57,9 @@ Monitor commands:
 - docker --context orbstack compose -f compose.yaml ps
 - docker --context orbstack compose -f compose.yaml logs --tail=120 api
 - curl -sS http://127.0.0.1:8000/jobs/<job_id>
+- curl -sS http://127.0.0.1:8000/lab/summary
+- curl -sS http://127.0.0.1:8000/models
+- curl -sS http://127.0.0.1:8000/integrations/cloud/status
 
 Expected successful flow:
 1. Receive prompt.
@@ -62,11 +74,13 @@ Expected successful flow:
 10. Apply policy gates.
 11. Record preview/browser evidence.
 12. Sync review output and return final status plus promotion decision.
+13. Index the terminal run for lab summary and task-suite comparison.
 
 Do not:
 - Treat mock PR URLs as real GitHub PRs.
 - Treat local-deterministic as live external model inference.
 - Treat local deployment artifacts as production deploys.
+- Treat ECS dispatch plans as submitted AWS tasks.
 - Commit runtime SQLite databases, generated workspaces, or artifacts.
 - Add package dependencies without updating the allowlist and tests.
 - Log or persist secrets.
@@ -75,3 +89,8 @@ Useful API reads:
 - GET /lab/runs
 - GET /lab/runs?model_id=local-deterministic&promotion_status=promote
 - GET /lab/summary
+- GET /lab
+- GET /models
+- GET /auth/status
+- GET /users/<user_id>/quota
+- GET /jobs/<job_id>/cloud-dispatch-plan

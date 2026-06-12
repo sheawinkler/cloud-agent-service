@@ -22,11 +22,13 @@ the deploy boundary when evidence is weak.
 | Safety | Failed tests or policies stop sync/deploy. | Gate failure returns `failed` before mock PR/deploy. |
 | Preview proof | Reviewers get inspectable evidence before deploy. | Final result includes preview URL, preview artifact, and browser-proof checks. |
 | Promotion decision | The run has a clear model/agent verdict. | Final result returns `promote`, `reject`, or `needs_review` with evidence. |
+| Task-suite comparison | Multiple scenarios can be compared as a lab batch. | `scripts/evaluate_task_suite.py` scores promote/review/reject outcomes. |
 | Git sync | Jobs are not locked to one Git forge. | Generic Git jobs clone a remote and push a review branch. |
 | GitHub sync | GitHub jobs can use app-scoped credentials instead of user tokens. | Configured GitHub App jobs clone, push a branch, and create or reuse a PR. |
+| Auth and quotas | Multi-tenant controls can be enabled without changing handlers. | `AGENT_CLOUD_API_KEYS` and `AGENT_CLOUD_USER_TOKEN_QUOTA` gate requests. |
 | Approval gates | Deployment does not happen without policy approval. | Manual jobs return `ready` until approved. |
 | Operator UX | A reviewer can see what happened quickly. | Final result includes changed files, commands, gates, and risks. |
-| Cloud readiness | Local parts map cleanly to managed services. | Queue, worker, store, sync, and deploy are separate seams. |
+| Cloud readiness | Local parts map cleanly to managed services. | ECS dispatch plans map jobs to Fargate `run_task` requests without AWS calls. |
 
 ## Core Metrics
 
@@ -46,6 +48,9 @@ the deploy boundary when evidence is weak.
 - Cost per successful job.
 - Jobs requiring human approval.
 - Jobs retried after failure or cancellation.
+- Task-suite score by model/agent pair.
+- User token budget reserved versus consumed.
+- ECS dispatch plans created versus rejected for missing configuration.
 
 ## Evaluation Scenarios
 
@@ -118,6 +123,23 @@ the deploy boundary when evidence is weak.
     - Expected: `/lab/runs` lists terminal runs and `/lab/summary` reports
       promotion counts by status and by model/agent pair.
 
+15. Task-suite comparison
+    - Run `python3 scripts/evaluate_task_suite.py`.
+    - Expected: the suite scores `1.0` across promote, needs-review, and reject
+      outcomes, and writes all terminal runs into `lab_runs`.
+
+16. Auth and quota controls
+    - Set `AGENT_CLOUD_API_KEYS` and `AGENT_CLOUD_USER_TOKEN_QUOTA`, then submit
+      jobs with and without `x-api-key`.
+    - Expected: unauthenticated requests are rejected and quota-exceeding
+      requests return `429` before dispatch.
+
+17. ECS dispatch contract
+    - Set `AGENT_CLOUD_ECS_CLUSTER`, `AGENT_CLOUD_ECS_TASK_DEFINITION`, and
+      `AGENT_CLOUD_ECS_SUBNETS`, then call `/jobs/<job_id>/cloud-dispatch-plan`.
+    - Expected: the response includes an AWS ECS `run_task` request shape and
+      the worker payload; no AWS API call is made.
+
 ## Evidence To Show In A Demo
 
 The demo should make these proof points visible without much narration:
@@ -146,10 +168,10 @@ promotion_decision_created
 ```
 
 The service should be considered not production-ready until real deployment
-integration, auth, multi-tenant quotas, durable cloud storage, and ECS/Fargate
-worker dispatch replace the local defaults. The model/agent lab layer records
-run metadata and deterministic promotion decisions, and `lab_runs` makes those
-decisions queryable for comparison; it does not yet train, fine-tune, or call
-external SLM/LLM providers. Generic Git sync is provider
-agnostic, while GitHub PR creation is implemented only for `repo_provider=github`
-when app credentials are configured and verified.
+integration, durable cloud storage, and actual ECS/Fargate worker submission
+replace the local defaults. The model/agent lab layer records run metadata and
+promotion decisions, and `lab_runs` makes those decisions queryable for
+comparison; the OpenAI Responses path is present but disabled unless configured.
+Generic Git sync is provider agnostic, while GitHub PR creation is implemented
+only for `repo_provider=github` when app credentials are configured and
+verified.

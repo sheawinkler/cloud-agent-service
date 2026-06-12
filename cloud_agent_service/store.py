@@ -396,6 +396,44 @@ class JobStore:
             "by_model_agent": [dict(row) for row in by_model_agent_rows],
         }
 
+    def user_usage(self, user_id: str) -> dict[str, Any]:
+        with closing(self._connect()) as conn:
+            jobs = conn.execute(
+                """
+                SELECT
+                    COUNT(*) AS jobs_count,
+                    COALESCE(SUM(token_budget), 0) AS token_budget_reserved
+                FROM jobs
+                WHERE user_id = ?
+                """,
+                (user_id,),
+            ).fetchone()
+            active = conn.execute(
+                """
+                SELECT COUNT(*) AS active_jobs_count
+                FROM jobs
+                WHERE user_id = ?
+                  AND status NOT IN ('succeeded', 'failed', 'cancelled')
+                """,
+                (user_id,),
+            ).fetchone()
+            tokens_used = conn.execute(
+                """
+                SELECT COALESCE(SUM(budget_ledger.token_delta), 0) AS tokens_used
+                FROM budget_ledger
+                JOIN jobs ON jobs.job_id = budget_ledger.job_id
+                WHERE jobs.user_id = ?
+                """,
+                (user_id,),
+            ).fetchone()
+        return {
+            "user_id": user_id,
+            "jobs_count": int(jobs["jobs_count"]),
+            "active_jobs_count": int(active["active_jobs_count"]),
+            "token_budget_reserved": int(jobs["token_budget_reserved"]),
+            "tokens_used": int(tokens_used["tokens_used"]),
+        }
+
     def list_jobs(self, limit: int = 50, user_id: str | None = None) -> list[dict[str, Any]]:
         limit = max(1, min(limit, 200))
         query = "SELECT * FROM jobs"

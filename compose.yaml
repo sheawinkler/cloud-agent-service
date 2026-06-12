@@ -3,6 +3,8 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.api
+      args:
+        PYTHON_BASE_IMAGE: ${PYTHON_BASE_IMAGE:-python:3.12-slim}
     ports:
       - "8000:8000"
     environment:
@@ -20,6 +22,8 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.agent
+      args:
+        PYTHON_BASE_IMAGE: ${PYTHON_BASE_IMAGE:-python:3.12-slim}
     environment:
       AGENT_CLOUD_RUNTIME: /runtime
       AGENT_CLOUD_DB: /runtime/jobs.sqlite3

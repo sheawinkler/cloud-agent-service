@@ -37,11 +37,13 @@ evidence -> `PromotionDecision`.
 - `store.py`: SQLite job and event persistence.
 - `orchestrator.py`: local queue plus persisted queued-job runner.
 - `worker.py`: container-friendly one-job or claim-next entry point.
+- `cloud_dispatch.py`: AWS ECS/Fargate dry-run dispatch request builder.
 - `compose.yaml`: local Docker Compose wiring.
 - `scripts/install_allowed_modules.sh`: dependency allowlist installer.
 - `demo.sh`: one-command local demo.
 - `scripts/demo_local_flow.py`: standard-library demo path for the happy flow.
 - `scripts/evaluate_mvp.py`: golden buy-button task evaluator.
+- `scripts/evaluate_task_suite.py`: multi-run lab task-suite evaluator.
 - `scripts/smoke_api.py`: standard-library smoke suite for the live API.
 - `EVALUATION.md`: criteria for judging product and operational readiness.
 - `examples/agent_contract.json`: example job payload and final result contract.
@@ -101,6 +103,9 @@ curl -sS http://127.0.0.1:8000/jobs/<job_id>/budget
 curl -sS http://127.0.0.1:8000/jobs/<job_id>/events
 curl -sS http://127.0.0.1:8000/lab/runs
 curl -sS http://127.0.0.1:8000/lab/summary
+curl -sS http://127.0.0.1:8000/models
+curl -sS http://127.0.0.1:8000/auth/status
+curl -sS http://127.0.0.1:8000/integrations/cloud/status
 python -m cloud_agent_service.worker --claim-next
 ```
 

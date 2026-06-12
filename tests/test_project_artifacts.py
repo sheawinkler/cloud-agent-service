@@ -51,6 +51,24 @@ class ProjectArtifactTests(unittest.TestCase):
         self.assertTrue(payload["checks"]["buy_button_present"])
         self.assertTrue(payload["checks"]["preview_artifact_created"])
 
+    def test_task_suite_scores_multiple_policy_outcomes(self):
+        result = subprocess.run(
+            ["python3", "scripts/evaluate_task_suite.py"],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        payload = json.loads(result.stdout)
+
+        self.assertEqual("shopping_button_policy_suite", payload["suite_id"])
+        self.assertEqual(1.0, payload["score"])
+        self.assertEqual(3, len(payload["tasks"]))
+        self.assertEqual(3, payload["lab_summary"]["total_runs"])
+        self.assertIn("promote", payload["lab_summary"]["by_promotion_status"])
+        self.assertIn("needs_review", payload["lab_summary"]["by_promotion_status"])
+        self.assertIn("reject", payload["lab_summary"]["by_promotion_status"])
+
     def test_api_smoke_script_has_standard_entrypoint(self):
         script = ROOT / "scripts" / "smoke_api.py"
         content = script.read_text(encoding="utf-8")

@@ -22,6 +22,11 @@ class ApiClient:
     def get(self, path: str) -> dict[str, Any]:
         return self._request("GET", path)
 
+    def get_text(self, path: str) -> str:
+        request = Request(self.base_url + path, method="GET")
+        with urlopen(request, timeout=5) as response:
+            return response.read().decode("utf-8")
+
     def post(self, path: str, payload: dict[str, Any] | None = None) -> dict[str, Any]:
         return self._request("POST", path, payload)
 
@@ -68,6 +73,32 @@ def run_smoke(base_url: str, repo_path: str) -> dict[str, Any]:
         "github_status",
         "configured" in github and "mode" in github,
         response=github,
+    )
+
+    auth = client.get("/auth/status")
+    record(
+        results,
+        "auth_status",
+        auth["api_key_required"] is False and "user_token_quota" in auth,
+        response=auth,
+    )
+
+    cloud = client.get("/integrations/cloud/status")
+    record(
+        results,
+        "cloud_status",
+        cloud["provider"] == "aws-ecs" and "configured" in cloud,
+        response=cloud,
+    )
+
+    models = client.get("/models")
+    record(
+        results,
+        "models",
+        any(model["model_id"] == "local-deterministic" for model in models["models"])
+        and any(agent["agent_id"] == "openai-repo-editor-v1" for agent in models["agents"]),
+        models=len(models["models"]),
+        agents=len(models["agents"]),
     )
 
     job = client.post(
@@ -163,6 +194,22 @@ def run_smoke(base_url: str, repo_path: str) -> dict[str, Any]:
         lab_summary["total_runs"] >= 1
         and lab_summary["by_promotion_status"].get("promote", 0) >= 1,
         response=lab_summary,
+    )
+
+    lab_ui = client.get_text("/lab")
+    record(
+        results,
+        "lab_ui",
+        "<title>Agent Lab</title>" in lab_ui and "Recent Runs" in lab_ui,
+        length=len(lab_ui),
+    )
+
+    quota = client.get("/users/local-user/quota")
+    record(
+        results,
+        "user_quota",
+        quota["jobs_count"] >= 1 and quota["token_budget_reserved"] >= 2000,
+        response=quota,
     )
 
     one_click = client.post(
