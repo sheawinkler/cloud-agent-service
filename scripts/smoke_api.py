@@ -102,15 +102,23 @@ def run_smoke(base_url: str, repo_path: str) -> dict[str, Any]:
     )
 
     harnesses = client.get("/harnesses")
+    top_harness_ids = {harness["harness_id"] for harness in harnesses["top_20"]}
     record(
         results,
         "harnesses",
         len(harnesses["top_20"]) == 20
+        and {
+            "factory-droid",
+            "pi-coding-agent",
+            "hermes-agent",
+            "openai-codex-cli",
+        }.issubset(top_harness_ids)
         and any(
-            harness["harness_id"] == "openai-codex-cli"
-            for harness in harnesses["top_20"]
+            harness["harness_id"] == "agno"
+            for harness in harnesses["harnesses"]
         )
         and harnesses["custom_harness_prefix"] == "custom:",
+        indexed=len(harnesses["harnesses"]),
         top_20=len(harnesses["top_20"]),
         custom_harness_prefix=harnesses["custom_harness_prefix"],
     )

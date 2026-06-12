@@ -11,8 +11,8 @@ Terminal runs are indexed in `lab_runs` so model/agent/harness promotion
 outcomes can be queried and summarized.
 Task suites, runtime status, optional auth/quotas, a lab UI, and ECS dry-run
 dispatch plans are present as productization scaffolding. The harness registry
-pre-indexes 20 current agent harnesses and accepts `custom:<name>` harness IDs
-as dispatch contracts.
+pre-indexes current agent harnesses, exposes a top_20 slice, and accepts
+`custom:<name>` harness IDs as dispatch contracts.
 
 Important boundary:
 The current implementation does not call AWS and does not perform a real
@@ -21,7 +21,7 @@ control flow. Generic Git jobs push review branches to origin. GitHub App jobs
 require app credentials before claiming live clone/push/PR behavior.
 OpenAI Responses-backed agent runs require explicit enablement and an API key;
 the default path is still deterministic and offline.
-Top-20 and custom harness IDs do not mean those third-party CLIs or managed
+Ranked and custom harness IDs do not mean those third-party CLIs or managed
 agents execute; a worker image or adapter must implement the selected harness
 before live execution can be claimed.
 
@@ -38,7 +38,8 @@ Primary files:
 - orchestrator.py: local queue and runner.
 - worker.py: one-job container entry point.
 - cloud_dispatch.py: ECS/Fargate dry-run dispatch request builder.
-- harness_registry.py: top-20 agent harness index and custom harness contracts.
+- harness_registry.py: ranked agent harness index, top_20 slice, and custom
+  harness contracts.
 - compose.yaml: Docker Compose for local API/worker builds.
 - EVALUATION.md: product and operational evaluation criteria.
 - examples/agent_contract.json: worker payload and final result example.

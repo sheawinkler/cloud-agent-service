@@ -22,7 +22,7 @@ Each repo update is also a minimal lab run: `ModelSpec` + `AgentSpec` +
   claim live external SLM/LLM inference unless an actual provider call is wired
   and verified.
 - Treat `harness_id` as the selected runtime contract. `local-template` is the
-  default deterministic harness. Top-20 and `custom:<name>` harness IDs are
+  default deterministic harness. Ranked and `custom:<name>` harness IDs are
   indexed for dispatch routing, but do not execute arbitrary third-party CLIs
   unless the worker image or adapter actually implements that harness.
 - Treat `deployed: local mock deployment recorded` as a local artifact, not a
@@ -42,8 +42,8 @@ Each repo update is also a minimal lab run: `ModelSpec` + `AgentSpec` +
 - `orchestrator.py`: local queue plus persisted queued-job runner.
 - `worker.py`: container-friendly one-job or claim-next entry point.
 - `cloud_dispatch.py`: AWS ECS/Fargate dry-run dispatch request builder.
-- `harness_registry.py`: pre-indexed top-20 agent harnesses plus custom harness
-  contract support.
+- `harness_registry.py`: pre-indexed agent harness registry, top-20 slice, and
+  custom harness contract support.
 - `compose.yaml`: local Docker Compose wiring.
 - `scripts/install_allowed_modules.sh`: dependency allowlist installer.
 - `demo.sh`: one-command local demo.

@@ -248,9 +248,19 @@ class CloudAgentServiceFlowTests(unittest.TestCase):
 
         self.assertEqual(20, len(top))
         self.assertEqual(list(range(1, 21)), [harness.rank for harness in top])
-        self.assertEqual(21, len(response["harnesses"]))
-        self.assertEqual("openai-codex-cli", top[0].harness_id)
-        self.assertEqual("agno", top[-1].harness_id)
+        self.assertEqual(24, len(response["harnesses"]))
+        top_ids = {harness.harness_id for harness in top}
+        indexed_ids = {harness["harness_id"] for harness in response["harnesses"]}
+        self.assertEqual("factory-droid", top[0].harness_id)
+        self.assertTrue(
+            {
+                "factory-droid",
+                "pi-coding-agent",
+                "hermes-agent",
+                "openai-codex-cli",
+            }.issubset(top_ids)
+        )
+        self.assertTrue({"agno", "crewai", "llamaindex"}.issubset(indexed_ids))
         self.assertEqual("custom:acme-runner", custom.harness_id)
         self.assertEqual("custom-harness.v1", custom.execution_contract)
 

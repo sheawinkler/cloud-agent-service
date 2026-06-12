@@ -9,8 +9,8 @@ It also includes the cloud-ready operational boundaries needed before real
 AWS/Git rollout: durable queue claiming, worker payloads, budget ledger, event
 streaming, repo profiling, repo memory, model/agent run metadata, approval
 gates, continuation, lab-run summaries, task-suite evaluation, optional
-API-key/usage controls, a top-20 harness index, and an ECS dry-run dispatch
-contract.
+API-key/usage controls, a ranked harness index with a top-20 slice, and an ECS
+dry-run dispatch contract.
 
 Local repo jobs still use mock PR and deployment artifacts. Generic Git jobs
 clone from `git_url` and push an agent branch back to `origin`. GitHub repo jobs
@@ -71,8 +71,8 @@ Monitoring:
 - `orchestrator.py`: local in-memory queue plus persisted queued-job runner.
 - `worker.py`: container-friendly single-job or claim-next entry point.
 - `cloud_dispatch.py`: AWS ECS/Fargate dry-run dispatch request builder.
-- `harness_registry.py`: curated top-20 agent harness index plus custom harness
-  contract support.
+- `harness_registry.py`: curated agent harness index, top-20 slice, and custom
+  harness contract support.
 - `Dockerfile.api`: API container.
 - `Dockerfile.agent`: worker container.
 - `compose.yaml`: local API/worker build configuration.
@@ -131,21 +131,23 @@ silently falling back to the deterministic model.
 
 ## Agent Harness Index
 
-`GET /harnesses` exposes a curated top-20 harness list for cloud repo-editing
-workers. The index covers terminal coding agents, managed cloud coding agents,
-and production agent SDKs. It is intentionally a dispatch contract: the service
-records `harness_id`, includes `harness_spec` in the worker payload and final
-evidence, and passes `AGENT_CLOUD_HARNESS_ID` into ECS dry-run plans. It does
-not execute arbitrary third-party CLIs unless the worker image or adapter has
-been built for that harness.
+`GET /harnesses` exposes a curated harness registry for cloud repo-editing
+workers plus a `top_20` slice for the current strongest defaults. The index
+covers terminal coding agents, long-running harnesses, managed cloud coding
+agents, and production agent SDKs. It is intentionally a dispatch contract: the
+service records `harness_id`, includes `harness_spec` in the worker payload and
+final evidence, and passes `AGENT_CLOUD_HARNESS_ID` into ECS dry-run plans. It
+does not execute arbitrary third-party CLIs unless the worker image or adapter
+has been built for that harness.
 
 Use `local-template` for the deterministic local harness, one of the indexed
-harness IDs such as `openhands` or `openai-codex-cli`, or a custom safe ID like
+harness IDs such as `factory-droid`, `pi-coding-agent`, `hermes-agent`,
+`openhands`, or `openai-codex-cli`, or a custom safe ID like
 `custom:internal-runner`.
 
 ```bash
 curl -sS http://127.0.0.1:8000/harnesses
-curl -sS http://127.0.0.1:8000/harnesses/openhands
+curl -sS http://127.0.0.1:8000/harnesses/factory-droid
 curl -sS 'http://127.0.0.1:8000/lab/runs?harness_id=local-template'
 ```
 

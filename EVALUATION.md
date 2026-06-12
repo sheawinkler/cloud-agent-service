@@ -19,7 +19,7 @@ the deploy boundary when evidence is weak.
 | Repo memory | Follow-up jobs can reuse prior repo context. | `repo_memory_loaded` is emitted and `repo_memory` records the last profile. |
 | Model/agent/harness tracking | A repo update is attributable to a specific lab config. | Worker payload and result evidence include `ModelSpec`, `AgentSpec`, and `HarnessSpec`. |
 | Lab history | Model/agent/harness runs can be compared across jobs. | `lab_runs` records terminal runs and `/lab/summary` groups promotions. |
-| Harness portability | The control plane can route to known and custom agent harness contracts. | `/harnesses` exposes a top-20 index, and `custom:<name>` harness IDs are accepted as dispatch contracts. |
+| Harness portability | The control plane can route to known and custom agent harness contracts. | `/harnesses` exposes a ranked registry with a top-20 slice, and `custom:<name>` harness IDs are accepted as dispatch contracts. |
 | Safety | Failed tests or policies stop sync/deploy. | Gate failure returns `failed` before mock PR/deploy. |
 | Preview proof | Reviewers get inspectable evidence before deploy. | Final result includes preview URL, preview artifact, and browser-proof checks. |
 | Promotion decision | The run has a clear model/agent verdict. | Final result returns `promote`, `reject`, or `needs_review` with evidence. |
@@ -144,11 +144,12 @@ the deploy boundary when evidence is weak.
 
 18. Harness index and custom harness contract
     - Read `/harnesses`, then submit equivalent jobs with `local-template`,
-      an indexed harness ID such as `openhands`, and a custom ID such as
-      `custom:internal-runner`.
-    - Expected: `/harnesses` returns 20 ranked harnesses, the worker payload and
-      evidence preserve the selected harness contract, unknown IDs fail before
-      dispatch, and custom IDs are recorded without claiming live execution.
+      an indexed harness ID such as `factory-droid`, `pi-coding-agent`, or
+      `hermes-agent`, and a custom ID such as `custom:internal-runner`.
+    - Expected: `/harnesses` returns a 20-item `top_20` slice plus the full
+      ranked registry, the worker payload and evidence preserve the selected
+      harness contract, unknown IDs fail before dispatch, and custom IDs are
+      recorded without claiming live execution.
 
 ## Evidence To Show In A Demo
 
@@ -183,7 +184,7 @@ integration, durable cloud storage, and actual ECS/Fargate worker submission
 replace the local defaults. The model/agent/harness lab layer records run
 metadata and promotion decisions, and `lab_runs` makes those decisions queryable
 for comparison; the OpenAI Responses path is present but disabled unless
-configured. Top-20 and custom harness IDs are dispatch contracts, not proof that
+configured. Ranked and custom harness IDs are dispatch contracts, not proof that
 third-party CLIs or managed agents execute, until corresponding worker adapters
 are built and verified. Generic Git sync is provider agnostic, while GitHub PR
 creation is implemented only for `repo_provider=github` when app credentials are
