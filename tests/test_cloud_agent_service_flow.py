@@ -1,3 +1,4 @@
+import sqlite3
 import subprocess
 import tempfile
 import unittest
@@ -5,6 +6,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from cloud_agent_service.cloud_dispatch import EcsDispatchPlanner
+from cloud_agent_service.harness_registry import HarnessRegistry
 from cloud_agent_service.models import DeploymentPolicy, JobRequest, JobStatus, RepoProvider
 from cloud_agent_service.pipeline import (
     AgentCloudFlow,
@@ -118,6 +120,7 @@ class CloudAgentServiceFlowTests(unittest.TestCase):
             self.assertTrue(result.evidence["browser_checks"]["buy_button_present"])
             self.assertEqual("local-deterministic", result.evidence["model_spec"]["model_id"])
             self.assertEqual("repo-editor-v1", result.evidence["agent_spec"]["agent_id"])
+            self.assertEqual("local-template", result.evidence["harness_spec"]["harness_id"])
             self.assertEqual("promote", result.promotion_decision["status"])
 
             workspace_index = root / "workspaces" / job_id / "repo" / "index.html"
@@ -131,6 +134,7 @@ class CloudAgentServiceFlowTests(unittest.TestCase):
             lab_run = flow.store.get_lab_run(job_id)
             self.assertEqual("local-deterministic", lab_run["model_id"])
             self.assertEqual("repo-editor-v1", lab_run["agent_id"])
+            self.assertEqual("local-template", lab_run["harness_id"])
             self.assertEqual("promote", lab_run["promotion_status"])
             self.assertEqual(1, lab_run["changed_files_count"])
             summary = flow.store.lab_summary()
@@ -147,10 +151,15 @@ class CloudAgentServiceFlowTests(unittest.TestCase):
                 ],
                 summary["by_model_agent"],
             )
+            self.assertEqual(
+                [{"harness_id": "local-template", "promotion_status": "promote", "count": 1}],
+                summary["by_harness"],
+            )
 
             expected_events = {
                 "job_created",
                 "job_queued",
+                "harness_selected",
                 "agent_dispatched",
                 "repo_cloned",
                 "repo_analyzed",
@@ -198,8 +207,13 @@ class CloudAgentServiceFlowTests(unittest.TestCase):
             self.assertEqual(1, payload.max_changed_files)
             self.assertEqual("local-deterministic", payload.model_id)
             self.assertEqual("repo-editor-v1", payload.agent_id)
+            self.assertEqual("local-template", payload.harness_id)
             self.assertEqual("deterministic-repo-editor", payload.model_spec["name"])
             self.assertEqual("repo_editor", payload.agent_spec["role"])
+            self.assertEqual(
+                "local-deterministic-edit.v1",
+                payload.harness_spec["execution_contract"],
+            )
             self.assertIn("policy_gate_results", payload.output_schema)
 
     def test_unknown_model_or_agent_is_rejected_before_dispatch(self):
@@ -225,6 +239,104 @@ class CloudAgentServiceFlowTests(unittest.TestCase):
                         agent_id="missing-agent",
                     )
                 )
+
+    def test_harness_registry_indexes_top_twenty_and_custom_contracts(self):
+        registry = HarnessRegistry()
+        top = registry.top()
+        response = registry.response()
+        custom = registry.get("custom:acme-runner")
+
+        self.assertEqual(20, len(top))
+        self.assertEqual(list(range(1, 21)), [harness.rank for harness in top])
+        self.assertEqual(21, len(response["harnesses"]))
+        self.assertEqual("openai-codex-cli", top[0].harness_id)
+        self.assertEqual("agno", top[-1].harness_id)
+        self.assertEqual("custom:acme-runner", custom.harness_id)
+        self.assertEqual("custom-harness.v1", custom.execution_contract)
+
+    def test_unknown_harness_is_rejected_before_dispatch(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = self._build_repo(root)
+            flow = self._build_flow(root)
+
+            with self.assertRaises(RequestValidationError):
+                flow.create_job(
+                    JobRequest(
+                        prompt="For my shopping website, create a buy button.",
+                        repo_path=str(repo),
+                        harness_id="missing-harness",
+                    )
+                )
+
+    def test_custom_harness_contract_is_preserved_in_payload_and_evidence(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = self._build_repo(root)
+            flow = self._build_flow(root)
+            request = JobRequest(
+                prompt="For my shopping website, create a buy button.",
+                repo_path=str(repo),
+                deploy_policy=DeploymentPolicy.LOCAL,
+                harness_id="custom:acme-runner",
+            )
+
+            job_id = flow.create_job(request)
+            payload = flow.build_worker_payload(job_id)
+            result = flow.run_job(job_id)
+
+            self.assertEqual("custom:acme-runner", payload.harness_id)
+            self.assertEqual("custom-harness.v1", payload.harness_spec["execution_contract"])
+            self.assertEqual("custom:acme-runner", result.evidence["harness_spec"]["harness_id"])
+            self.assertEqual("custom:acme-runner", flow.store.get_lab_run(job_id)["harness_id"])
+
+    def test_job_store_migrates_legacy_lab_runs_before_harness_indexes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "jobs.sqlite3"
+            with sqlite3.connect(db_path) as conn:
+                conn.execute(
+                    """
+                    CREATE TABLE lab_runs (
+                        job_id TEXT PRIMARY KEY,
+                        user_id TEXT NOT NULL,
+                        repo_provider TEXT NOT NULL,
+                        model_id TEXT NOT NULL,
+                        agent_id TEXT NOT NULL,
+                        job_status TEXT NOT NULL,
+                        promotion_status TEXT NOT NULL,
+                        promotion_reason TEXT NOT NULL,
+                        deployment_status TEXT NOT NULL,
+                        changed_files_count INTEGER NOT NULL,
+                        tests_failed_count INTEGER NOT NULL,
+                        token_budget INTEGER NOT NULL,
+                        tokens_used INTEGER NOT NULL,
+                        created_at TEXT NOT NULL,
+                        updated_at TEXT NOT NULL
+                    )
+                    """
+                )
+                conn.execute(
+                    """
+                    CREATE INDEX idx_lab_runs_model_agent_status
+                    ON lab_runs (model_id, agent_id, promotion_status)
+                    """
+                )
+
+            JobStore(db_path)
+
+            with sqlite3.connect(db_path) as conn:
+                columns = {
+                    row[1]
+                    for row in conn.execute("PRAGMA table_info(lab_runs)").fetchall()
+                }
+                indexes = {
+                    row[1]
+                    for row in conn.execute("PRAGMA index_list(lab_runs)").fetchall()
+                }
+
+            self.assertIn("harness_id", columns)
+            self.assertIn("idx_lab_runs_model_agent_harness_status", indexes)
+            self.assertIn("idx_lab_runs_harness_status", indexes)
 
     def test_model_agent_mismatch_is_rejected_before_dispatch(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -570,9 +682,11 @@ class CloudAgentServiceFlowTests(unittest.TestCase):
             self.assertEqual("agent-task:1", request["taskDefinition"])
             awsvpc_config = request["networkConfiguration"]["awsvpcConfiguration"]
             container = request["overrides"]["containerOverrides"][0]
+            env = {entry["name"]: entry["value"] for entry in container["environment"]}
             self.assertEqual(["subnet-a", "subnet-b"], awsvpc_config["subnets"])
             self.assertEqual("worker", container["name"])
             self.assertIn("--job-id", container["command"])
+            self.assertEqual("local-template", env["AGENT_CLOUD_HARNESS_ID"])
 
     def test_cloud_dispatch_status_reports_missing_ecs_configuration(self):
         with patch.dict("os.environ", {}, clear=True):

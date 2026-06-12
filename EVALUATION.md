@@ -17,8 +17,9 @@ the deploy boundary when evidence is weak.
 | Budget control | Work stops before spend exceeds policy. | Budget ledger records each stage and tiny budgets fail before sync. |
 | Repo intelligence | The service knows what kind of repo it is editing. | `repo_analyzed` records framework, package manager, and test hints. |
 | Repo memory | Follow-up jobs can reuse prior repo context. | `repo_memory_loaded` is emitted and `repo_memory` records the last profile. |
-| Model/agent tracking | A repo update is attributable to a specific lab config. | Worker payload and result evidence include `ModelSpec` and `AgentSpec`. |
-| Lab history | Model/agent runs can be compared across jobs. | `lab_runs` records terminal runs and `/lab/summary` groups promotions. |
+| Model/agent/harness tracking | A repo update is attributable to a specific lab config. | Worker payload and result evidence include `ModelSpec`, `AgentSpec`, and `HarnessSpec`. |
+| Lab history | Model/agent/harness runs can be compared across jobs. | `lab_runs` records terminal runs and `/lab/summary` groups promotions. |
+| Harness portability | The control plane can route to known and custom agent harness contracts. | `/harnesses` exposes a top-20 index, and `custom:<name>` harness IDs are accepted as dispatch contracts. |
 | Safety | Failed tests or policies stop sync/deploy. | Gate failure returns `failed` before mock PR/deploy. |
 | Preview proof | Reviewers get inspectable evidence before deploy. | Final result includes preview URL, preview artifact, and browser-proof checks. |
 | Promotion decision | The run has a clear model/agent verdict. | Final result returns `promote`, `reject`, or `needs_review` with evidence. |
@@ -39,7 +40,8 @@ the deploy boundary when evidence is weak.
 - Policy gate failure rate by gate.
 - Jobs stopped before deploy due to validation.
 - Preview proof pass rate.
-- Promotion status distribution by model and agent.
+- Promotion status distribution by model, agent, and harness.
+- Harness dispatch plans by promotion status.
 - Generic Git sync success rate.
 - GitHub App sync success rate.
 - Average changed files per job.
@@ -48,7 +50,7 @@ the deploy boundary when evidence is weak.
 - Cost per successful job.
 - Jobs requiring human approval.
 - Jobs retried after failure or cancellation.
-- Task-suite score by model/agent pair.
+- Task-suite score by model/agent/harness tuple.
 - User token budget reserved versus consumed.
 - ECS dispatch plans created versus rejected for missing configuration.
 
@@ -112,16 +114,16 @@ the deploy boundary when evidence is weak.
     - Expected: each policy returns the documented deploy status and only writes
       deployment artifacts for deploy-capable local policies.
 
-13. Model/agent lab run
+13. Model/agent/harness lab run
     - Submit a valid job with `model_id=local-deterministic` and
-      `agent_id=repo-editor-v1`.
-    - Expected: worker payload and final evidence include model/agent specs,
-      and the result includes a promotion decision.
+      `agent_id=repo-editor-v1` and `harness_id=local-template`.
+    - Expected: worker payload and final evidence include model, agent, and
+      harness specs, and the result includes a promotion decision.
 
 14. Lab run summary
     - Run successful, review-required, and failed jobs.
     - Expected: `/lab/runs` lists terminal runs and `/lab/summary` reports
-      promotion counts by status and by model/agent pair.
+      promotion counts by status, model/agent pair, and harness.
 
 15. Task-suite comparison
     - Run `python3 scripts/evaluate_task_suite.py`.
@@ -140,12 +142,21 @@ the deploy boundary when evidence is weak.
     - Expected: the response includes an AWS ECS `run_task` request shape and
       the worker payload; no AWS API call is made.
 
+18. Harness index and custom harness contract
+    - Read `/harnesses`, then submit equivalent jobs with `local-template`,
+      an indexed harness ID such as `openhands`, and a custom ID such as
+      `custom:internal-runner`.
+    - Expected: `/harnesses` returns 20 ranked harnesses, the worker payload and
+      evidence preserve the selected harness contract, unknown IDs fail before
+      dispatch, and custom IDs are recorded without claiming live execution.
+
 ## Evidence To Show In A Demo
 
 The demo should make these proof points visible without much narration:
 
 ```text
 job_created
+harness_selected
 job_queued
 agent_dispatched
 budget_charged
@@ -169,9 +180,11 @@ promotion_decision_created
 
 The service should be considered not production-ready until real deployment
 integration, durable cloud storage, and actual ECS/Fargate worker submission
-replace the local defaults. The model/agent lab layer records run metadata and
-promotion decisions, and `lab_runs` makes those decisions queryable for
-comparison; the OpenAI Responses path is present but disabled unless configured.
-Generic Git sync is provider agnostic, while GitHub PR creation is implemented
-only for `repo_provider=github` when app credentials are configured and
-verified.
+replace the local defaults. The model/agent/harness lab layer records run
+metadata and promotion decisions, and `lab_runs` makes those decisions queryable
+for comparison; the OpenAI Responses path is present but disabled unless
+configured. Top-20 and custom harness IDs are dispatch contracts, not proof that
+third-party CLIs or managed agents execute, until corresponding worker adapters
+are built and verified. Generic Git sync is provider agnostic, while GitHub PR
+creation is implemented only for `repo_provider=github` when app credentials are
+configured and verified.

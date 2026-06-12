@@ -14,11 +14,13 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
+from cloud_agent_service.harness_registry import HarnessRegistry
 from cloud_agent_service.models import (
     AgentPlan,
     AgentSpec,
     DeploymentPolicy,
     GitHubIntegrationStatus,
+    HarnessSpec,
     JobRequest,
     JobResult,
     JobStatus,
@@ -1095,6 +1097,7 @@ class AgentCloudFlow:
         self.workspace_root = Path(workspace_root)
         self.artifacts_dir = Path(artifacts_dir)
         self.lab_registry = ModelAgentRegistry()
+        self.harness_registry = HarnessRegistry()
         self.validator = RequestValidator()
         self.upgrader = PromptUpgrader()
         self.planner = Planner()
@@ -1118,6 +1121,7 @@ class AgentCloudFlow:
     def create_job(self, request: JobRequest) -> str:
         self.validator.validate(request)
         self.lab_registry.validate(request)
+        harness_spec = self._harness_spec(request.harness_id)
         job_id = self._job_id(request)
         self.store.create_job(
             {
@@ -1131,6 +1135,7 @@ class AgentCloudFlow:
                 "parent_job_id": request.parent_job_id,
                 "model_id": request.model_id,
                 "agent_id": request.agent_id,
+                "harness_id": harness_spec.harness_id,
                 "working_branch": self._working_branch(job_id, request),
                 "base_branch": request.base_branch,
                 "deploy_policy": request.deploy_policy.value,
@@ -1141,6 +1146,14 @@ class AgentCloudFlow:
             }
         )
         self.store.add_event(job_id, "job_created", {"user_id": request.user_id})
+        self.store.add_event(
+            job_id,
+            "harness_selected",
+            {
+                "harness_id": harness_spec.harness_id,
+                "execution_contract": harness_spec.execution_contract,
+            },
+        )
         self.store.update_job(job_id, status=JobStatus.QUEUED)
         self.store.add_event(job_id, "job_queued", {})
         return job_id
@@ -1157,6 +1170,7 @@ class AgentCloudFlow:
         request = self._request_from_job(job)
         model_spec = self.lab_registry.model(request.model_id)
         agent_spec = self.lab_registry.agent(request.agent_id)
+        harness_spec = self._harness_spec(request.harness_id)
         normalized = self.upgrader.upgrade(request)
         plan = self.planner.create_plan(request, normalized)
         return WorkerJobPayload(
@@ -1171,8 +1185,10 @@ class AgentCloudFlow:
             parent_job_id=request.parent_job_id,
             model_id=request.model_id,
             agent_id=request.agent_id,
+            harness_id=harness_spec.harness_id,
             model_spec=asdict(model_spec),
             agent_spec=asdict(agent_spec),
+            harness_spec=asdict(harness_spec),
             normalized_prompt=plan.normalized_prompt,
             acceptance_criteria=plan.acceptance_criteria,
             allowed_python_modules=plan.allowed_python_modules,
@@ -1278,6 +1294,9 @@ class AgentCloudFlow:
             "agents": [asdict(agent) for agent in self.lab_registry.list_agents()],
         }
 
+    def harness_status(self) -> dict[str, Any]:
+        return self.harness_registry.response()
+
     def run_job(self, job_id: str) -> JobResult:
         job = self.store.get_job(job_id)
         if not job:
@@ -1292,6 +1311,7 @@ class AgentCloudFlow:
         request = self._request_from_job(job)
         model_spec = self.lab_registry.model(request.model_id)
         agent_spec = self.lab_registry.agent(request.agent_id)
+        harness_spec = self._harness_spec(request.harness_id)
         agent_result = self._empty_agent_result()
         evidence: dict[str, Any] = {}
 
@@ -1305,8 +1325,10 @@ class AgentCloudFlow:
                 {
                     "model_id": request.model_id,
                     "agent_id": request.agent_id,
+                    "harness_id": harness_spec.harness_id,
                     "model_provider": model_spec.provider,
                     "agent_role": agent_spec.role,
+                    "harness_contract": harness_spec.execution_contract,
                 },
             )
 
@@ -1378,6 +1400,7 @@ class AgentCloudFlow:
                 request,
                 model_spec,
                 agent_spec,
+                harness_spec,
                 repo_profile,
                 normalized,
                 plan,
@@ -1436,6 +1459,7 @@ class AgentCloudFlow:
                 request,
                 model_spec,
                 agent_spec,
+                harness_spec,
             )
             self.store.add_event(job_id, "preview_created", asdict(preview))
             self.store.add_event(job_id, "browser_proof_finished", preview.checks)
@@ -1533,6 +1557,7 @@ class AgentCloudFlow:
             parent_job_id=job["parent_job_id"],
             model_id=job["model_id"],
             agent_id=job["agent_id"],
+            harness_id=job["harness_id"],
             user_id=job["user_id"],
             base_branch=job["base_branch"],
             deploy_policy=DeploymentPolicy(job["deploy_policy"]),
@@ -1571,6 +1596,7 @@ class AgentCloudFlow:
         request: JobRequest,
         model_spec: ModelSpec,
         agent_spec: AgentSpec,
+        harness_spec: HarnessSpec,
     ) -> dict[str, Any]:
         return {
             "job_id": job_id,
@@ -1579,6 +1605,7 @@ class AgentCloudFlow:
             "github_repo": request.github_repo,
             "model_spec": asdict(model_spec),
             "agent_spec": asdict(agent_spec),
+            "harness_spec": asdict(harness_spec),
             "preview_url": preview.preview_url,
             "preview_artifact_path": preview.artifact_path,
             "browser_proof_path": preview.browser_proof_path,
@@ -1634,6 +1661,7 @@ class AgentCloudFlow:
         request: JobRequest,
         model_spec: ModelSpec,
         agent_spec: AgentSpec,
+        harness_spec: HarnessSpec,
         repo_profile: RepoProfile,
         normalized: NormalizedPrompt,
         plan: AgentPlan,
@@ -1649,7 +1677,9 @@ class AgentCloudFlow:
             {
                 "model_id": request.model_id,
                 "agent_id": request.agent_id,
+                "harness_id": harness_spec.harness_id,
                 "agent_role": agent_spec.role,
+                "harness_contract": harness_spec.execution_contract,
                 "prompt": normalized.brief,
                 "acceptance_criteria": plan.acceptance_criteria,
                 "repo_profile": asdict(repo_profile),
@@ -1668,6 +1698,12 @@ class AgentCloudFlow:
             "response_id": response["response_id"],
             "output_preview": output_text[:1_000],
         }
+
+    def _harness_spec(self, harness_id: str) -> HarnessSpec:
+        try:
+            return self.harness_registry.get(harness_id)
+        except KeyError as exc:
+            raise RequestValidationError(f"unknown harness_id: {harness_id}") from exc
 
     @staticmethod
     def _safe_git_target(git_url: str | None) -> str | None:
@@ -1793,6 +1829,7 @@ class AgentCloudFlow:
                 "repo_provider": job["repo_provider"],
                 "model_id": job["model_id"],
                 "agent_id": job["agent_id"],
+                "harness_id": job["harness_id"],
                 "job_status": result.status.value,
                 "promotion_status": promotion.get("status", "unknown"),
                 "promotion_reason": promotion.get("reason", ""),
@@ -1846,6 +1883,7 @@ class AgentCloudFlow:
                 or str(Path(request.repo_path).expanduser().resolve()),
                 request.model_id,
                 request.agent_id,
+                request.harness_id,
                 request.base_branch,
                 request.prompt,
                 os.urandom(8).hex(),

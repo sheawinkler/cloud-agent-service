@@ -42,6 +42,7 @@ class JobStore:
                         parent_job_id TEXT,
                         model_id TEXT NOT NULL DEFAULT 'local-deterministic',
                         agent_id TEXT NOT NULL DEFAULT 'repo-editor-v1',
+                        harness_id TEXT NOT NULL DEFAULT 'local-template',
                         working_branch TEXT NOT NULL DEFAULT '',
                         workspace_path TEXT NOT NULL DEFAULT '',
                         base_branch TEXT NOT NULL,
@@ -103,6 +104,7 @@ class JobStore:
                         repo_provider TEXT NOT NULL,
                         model_id TEXT NOT NULL,
                         agent_id TEXT NOT NULL,
+                        harness_id TEXT NOT NULL DEFAULT 'local-template',
                         job_status TEXT NOT NULL,
                         promotion_status TEXT NOT NULL,
                         promotion_reason TEXT NOT NULL,
@@ -117,6 +119,8 @@ class JobStore:
                     )
                     """
                 )
+                self._ensure_job_columns(conn)
+                self._ensure_lab_run_columns(conn)
                 conn.execute(
                     """
                     CREATE INDEX IF NOT EXISTS idx_lab_runs_model_agent_status
@@ -125,11 +129,22 @@ class JobStore:
                 )
                 conn.execute(
                     """
+                    CREATE INDEX IF NOT EXISTS idx_lab_runs_model_agent_harness_status
+                    ON lab_runs (model_id, agent_id, harness_id, promotion_status)
+                    """
+                )
+                conn.execute(
+                    """
+                    CREATE INDEX IF NOT EXISTS idx_lab_runs_harness_status
+                    ON lab_runs (harness_id, promotion_status)
+                    """
+                )
+                conn.execute(
+                    """
                     CREATE INDEX IF NOT EXISTS idx_lab_runs_updated_at
                     ON lab_runs (updated_at)
                     """
                 )
-                self._ensure_job_columns(conn)
 
     def _ensure_job_columns(self, conn: sqlite3.Connection) -> None:
         columns = {
@@ -146,11 +161,24 @@ class JobStore:
             "parent_job_id": "TEXT",
             "model_id": "TEXT NOT NULL DEFAULT 'local-deterministic'",
             "agent_id": "TEXT NOT NULL DEFAULT 'repo-editor-v1'",
+            "harness_id": "TEXT NOT NULL DEFAULT 'local-template'",
             "working_branch": "TEXT NOT NULL DEFAULT ''",
         }
         for name, definition in additions.items():
             if name not in columns:
                 conn.execute(f"ALTER TABLE jobs ADD COLUMN {name} {definition}")
+
+    def _ensure_lab_run_columns(self, conn: sqlite3.Connection) -> None:
+        columns = {
+            row["name"]
+            for row in conn.execute("PRAGMA table_info(lab_runs)").fetchall()
+        }
+        additions = {
+            "harness_id": "TEXT NOT NULL DEFAULT 'local-template'",
+        }
+        for name, definition in additions.items():
+            if name not in columns:
+                conn.execute(f"ALTER TABLE lab_runs ADD COLUMN {name} {definition}")
 
     def create_job(self, job: dict[str, Any]) -> None:
         now = utc_now()
@@ -161,11 +189,11 @@ class JobStore:
                     INSERT INTO jobs (
                         job_id, user_id, prompt, repo_path, repo_provider,
                         git_url, github_repo, parent_job_id, working_branch,
-                        model_id, agent_id, base_branch, deploy_policy, token_budget,
+                        model_id, agent_id, harness_id, base_branch, deploy_policy, token_budget,
                         max_prompt_chars, max_runtime_seconds, max_changed_files,
                         status, created_at, updated_at
                     )
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         job["job_id"],
@@ -179,6 +207,7 @@ class JobStore:
                         job["working_branch"],
                         job["model_id"],
                         job["agent_id"],
+                        job["harness_id"],
                         job["base_branch"],
                         job["deploy_policy"],
                         job["token_budget"],
@@ -291,17 +320,18 @@ class JobStore:
                 conn.execute(
                     """
                     INSERT INTO lab_runs (
-                        job_id, user_id, repo_provider, model_id, agent_id,
+                        job_id, user_id, repo_provider, model_id, agent_id, harness_id,
                         job_status, promotion_status, promotion_reason,
                         deployment_status, changed_files_count, tests_failed_count,
                         token_budget, tokens_used, created_at, updated_at
                     )
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(job_id) DO UPDATE SET
                         user_id = excluded.user_id,
                         repo_provider = excluded.repo_provider,
                         model_id = excluded.model_id,
                         agent_id = excluded.agent_id,
+                        harness_id = excluded.harness_id,
                         job_status = excluded.job_status,
                         promotion_status = excluded.promotion_status,
                         promotion_reason = excluded.promotion_reason,
@@ -318,6 +348,7 @@ class JobStore:
                         run["repo_provider"],
                         run["model_id"],
                         run["agent_id"],
+                        run["harness_id"],
                         run["job_status"],
                         run["promotion_status"],
                         run["promotion_reason"],
@@ -346,6 +377,7 @@ class JobStore:
         limit: int = 50,
         model_id: str | None = None,
         agent_id: str | None = None,
+        harness_id: str | None = None,
         promotion_status: str | None = None,
     ) -> list[dict[str, Any]]:
         limit = max(1, min(limit, 200))
@@ -358,6 +390,9 @@ class JobStore:
         if agent_id:
             filters.append("agent_id = ?")
             params.append(agent_id)
+        if harness_id:
+            filters.append("harness_id = ?")
+            params.append(harness_id)
         if promotion_status:
             filters.append("promotion_status = ?")
             params.append(promotion_status)
@@ -388,12 +423,30 @@ class JobStore:
                 ORDER BY model_id, agent_id, promotion_status
                 """
             ).fetchall()
+            by_harness_rows = conn.execute(
+                """
+                SELECT harness_id, promotion_status, COUNT(*) AS count
+                FROM lab_runs
+                GROUP BY harness_id, promotion_status
+                ORDER BY harness_id, promotion_status
+                """
+            ).fetchall()
+            by_model_agent_harness_rows = conn.execute(
+                """
+                SELECT model_id, agent_id, harness_id, promotion_status, COUNT(*) AS count
+                FROM lab_runs
+                GROUP BY model_id, agent_id, harness_id, promotion_status
+                ORDER BY model_id, agent_id, harness_id, promotion_status
+                """
+            ).fetchall()
         return {
             "total_runs": int(total),
             "by_promotion_status": {
                 row["promotion_status"]: int(row["count"]) for row in by_status_rows
             },
             "by_model_agent": [dict(row) for row in by_model_agent_rows],
+            "by_harness": [dict(row) for row in by_harness_rows],
+            "by_model_agent_harness": [dict(row) for row in by_model_agent_harness_rows],
         }
 
     def user_usage(self, user_id: str) -> dict[str, Any]:

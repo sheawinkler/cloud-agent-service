@@ -49,6 +49,31 @@ class PromotionStatus(StrEnum):
     NEEDS_REVIEW = "needs_review"
 
 
+class HarnessCategory(StrEnum):
+    CODING_CLI = "coding_cli"
+    CLOUD_CODING_AGENT = "cloud_coding_agent"
+    AGENT_SDK = "agent_sdk"
+    ORCHESTRATION_RUNTIME = "orchestration_runtime"
+    CUSTOM = "custom"
+
+
+@dataclass(frozen=True)
+class HarnessSpec:
+    harness_id: str
+    name: str
+    category: HarnessCategory
+    rank: int | None
+    provider: str
+    runtime: str
+    execution_contract: str
+    repo_url: str | None
+    docs_url: str
+    install_hint: str
+    env_requirements: list[str]
+    strengths: list[str]
+    integration_notes: list[str]
+
+
 @dataclass(frozen=True)
 class TaskCase:
     task_id: str
@@ -77,6 +102,7 @@ class JobRequest:
     parent_job_id: str | None = None
     model_id: str = "local-deterministic"
     agent_id: str = "repo-editor-v1"
+    harness_id: str = "local-template"
     user_id: str = "local-user"
     base_branch: str = "main"
     deploy_policy: DeploymentPolicy = DeploymentPolicy.MANUAL
@@ -141,8 +167,10 @@ class WorkerJobPayload:
     parent_job_id: str | None
     model_id: str
     agent_id: str
+    harness_id: str
     model_spec: dict[str, Any]
     agent_spec: dict[str, Any]
+    harness_spec: dict[str, Any]
     normalized_prompt: str
     acceptance_criteria: list[str]
     allowed_python_modules: list[str]

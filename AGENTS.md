@@ -6,7 +6,7 @@ infrastructure. Local repo jobs use mock PR/deploy artifacts. Generic Git jobs
 clone and push a review branch to `origin`. GitHub repo jobs use the real GitHub
 App clone, branch push, and PR path only when app credentials are configured.
 Each repo update is also a minimal lab run: `ModelSpec` + `AgentSpec` +
-evidence -> `PromotionDecision`.
+`HarnessSpec` + evidence -> `PromotionDecision`.
 
 ## Boundaries
 
@@ -21,6 +21,10 @@ evidence -> `PromotionDecision`.
 - Treat `local-deterministic` as the current deterministic model spec; do not
   claim live external SLM/LLM inference unless an actual provider call is wired
   and verified.
+- Treat `harness_id` as the selected runtime contract. `local-template` is the
+  default deterministic harness. Top-20 and `custom:<name>` harness IDs are
+  indexed for dispatch routing, but do not execute arbitrary third-party CLIs
+  unless the worker image or adapter actually implements that harness.
 - Treat `deployed: local mock deployment recorded` as a local artifact, not a
   production deployment.
 - Do not persist secrets in docs, logs, SQLite data, test fixtures, or examples.
@@ -38,6 +42,8 @@ evidence -> `PromotionDecision`.
 - `orchestrator.py`: local queue plus persisted queued-job runner.
 - `worker.py`: container-friendly one-job or claim-next entry point.
 - `cloud_dispatch.py`: AWS ECS/Fargate dry-run dispatch request builder.
+- `harness_registry.py`: pre-indexed top-20 agent harnesses plus custom harness
+  contract support.
 - `compose.yaml`: local Docker Compose wiring.
 - `scripts/install_allowed_modules.sh`: dependency allowlist installer.
 - `demo.sh`: one-command local demo.
@@ -104,6 +110,7 @@ curl -sS http://127.0.0.1:8000/jobs/<job_id>/events
 curl -sS http://127.0.0.1:8000/lab/runs
 curl -sS http://127.0.0.1:8000/lab/summary
 curl -sS http://127.0.0.1:8000/models
+curl -sS http://127.0.0.1:8000/harnesses
 curl -sS http://127.0.0.1:8000/auth/status
 curl -sS http://127.0.0.1:8000/integrations/cloud/status
 python -m cloud_agent_service.worker --claim-next
@@ -120,26 +127,27 @@ docker --context orbstack compose -f compose.yaml down
 A successful local run should emit these core events:
 
 1. `job_created`
-2. `job_queued`
-3. `agent_dispatched`
-4. `budget_charged`
-5. `repo_cloned`
-6. `repo_analyzed`
-7. `repo_memory_loaded`
-8. `lab_run_configured`
-9. `prompt_upgraded`
-10. `plan_created`
-11. `dependencies_requested`
-12. `files_changed`
-13. `tests_finished`
-14. `policy_gate_result`
-15. `preview_created`
-16. `browser_proof_finished`
-17. `branch_pushed`
-18. `pr_created_or_updated`
-19. `deployment_finished`
-20. `job_succeeded`
-21. `promotion_decision_created`
+2. `harness_selected`
+3. `job_queued`
+4. `agent_dispatched`
+5. `budget_charged`
+6. `repo_cloned`
+7. `repo_analyzed`
+8. `repo_memory_loaded`
+9. `lab_run_configured`
+10. `prompt_upgraded`
+11. `plan_created`
+12. `dependencies_requested`
+13. `files_changed`
+14. `tests_finished`
+15. `policy_gate_result`
+16. `preview_created`
+17. `browser_proof_finished`
+18. `branch_pushed`
+19. `pr_created_or_updated`
+20. `deployment_finished`
+21. `job_succeeded`
+22. `promotion_decision_created`
 
 If a gate fails, the job must stop before mock PR sync or mock deployment.
 

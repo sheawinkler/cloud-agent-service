@@ -84,6 +84,7 @@ class EcsDispatchPlanner:
                                 {"name": "AGENT_CLOUD_USER_ID", "value": payload.user_id},
                                 {"name": "AGENT_CLOUD_MODEL_ID", "value": payload.model_id},
                                 {"name": "AGENT_CLOUD_AGENT_ID", "value": payload.agent_id},
+                                {"name": "AGENT_CLOUD_HARNESS_ID", "value": payload.harness_id},
                                 {
                                     "name": "AGENT_CLOUD_STATUS_CALLBACK_URL",
                                     "value": payload.status_callback_url,
@@ -97,6 +98,7 @@ class EcsDispatchPlanner:
                     {"key": "user_id", "value": payload.user_id},
                     {"key": "model_id", "value": payload.model_id},
                     {"key": "agent_id", "value": payload.agent_id},
+                    {"key": "harness_id", "value": payload.harness_id},
                 ],
             },
             "worker_payload": asdict(payload),

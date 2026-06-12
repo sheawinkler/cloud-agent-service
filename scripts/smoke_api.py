@@ -101,6 +101,20 @@ def run_smoke(base_url: str, repo_path: str) -> dict[str, Any]:
         agents=len(models["agents"]),
     )
 
+    harnesses = client.get("/harnesses")
+    record(
+        results,
+        "harnesses",
+        len(harnesses["top_20"]) == 20
+        and any(
+            harness["harness_id"] == "openai-codex-cli"
+            for harness in harnesses["top_20"]
+        )
+        and harnesses["custom_harness_prefix"] == "custom:",
+        top_20=len(harnesses["top_20"]),
+        custom_harness_prefix=harnesses["custom_harness_prefix"],
+    )
+
     job = client.post(
         "/jobs",
         {
@@ -123,7 +137,8 @@ def run_smoke(base_url: str, repo_path: str) -> dict[str, Any]:
         and payload["max_changed_files"] == 2
         and payload["working_branch"] == f"agent/{job_id}"
         and payload["model_id"] == "local-deterministic"
-        and payload["agent_id"] == "repo-editor-v1",
+        and payload["agent_id"] == "repo-editor-v1"
+        and payload["harness_id"] == "local-template",
         token_budget=payload["token_budget"],
         max_changed_files=payload["max_changed_files"],
     )
@@ -181,6 +196,7 @@ def run_smoke(base_url: str, repo_path: str) -> dict[str, Any]:
             run["job_id"] == job_id
             and run["model_id"] == "local-deterministic"
             and run["agent_id"] == "repo-editor-v1"
+            and run["harness_id"] == "local-template"
             and run["promotion_status"] == "promote"
             for run in lab_runs["runs"]
         ),

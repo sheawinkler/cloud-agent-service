@@ -19,6 +19,9 @@ class ProjectArtifactTests(unittest.TestCase):
         self.assertIn("github_repo", payload["job_payload"])
         self.assertIn("model_spec", payload["job_payload"])
         self.assertIn("agent_spec", payload["job_payload"])
+        self.assertIn("harness_spec", payload["job_payload"])
+        self.assertEqual("local-template", payload["job_payload"]["harness_id"])
+        self.assertIn("harness_spec", payload["final_result"]["evidence"])
         self.assertIn("promotion_decision", payload["final_result"])
 
     def test_demo_local_flow_succeeds(self):

@@ -9,7 +9,8 @@ It also includes the cloud-ready operational boundaries needed before real
 AWS/Git rollout: durable queue claiming, worker payloads, budget ledger, event
 streaming, repo profiling, repo memory, model/agent run metadata, approval
 gates, continuation, lab-run summaries, task-suite evaluation, optional
-API-key/usage controls, and an ECS dry-run dispatch contract.
+API-key/usage controls, a top-20 harness index, and an ECS dry-run dispatch
+contract.
 
 Local repo jobs still use mock PR and deployment artifacts. Generic Git jobs
 clone from `git_url` and push an agent branch back to `origin`. GitHub repo jobs
@@ -18,9 +19,10 @@ reuse a pull request. The MVP does not create AWS resources or perform
 production deployment.
 
 The Mirendil-facing framing is that a repo update is also a minimal Language
-Model Lab run: a `ModelSpec` plus `AgentSpec` executes a bounded task and
-produces a `PromotionDecision` from tests, policy gates, preview proof, and
-deployment policy. This is not a training or fine-tuning system.
+Model Lab run: a `ModelSpec` plus `AgentSpec` plus `HarnessSpec` executes a
+bounded task and produces a `PromotionDecision` from tests, policy gates,
+preview proof, and deployment policy. This is not a training or fine-tuning
+system.
 
 ## App Flow
 
@@ -69,6 +71,8 @@ Monitoring:
 - `orchestrator.py`: local in-memory queue plus persisted queued-job runner.
 - `worker.py`: container-friendly single-job or claim-next entry point.
 - `cloud_dispatch.py`: AWS ECS/Fargate dry-run dispatch request builder.
+- `harness_registry.py`: curated top-20 agent harness index plus custom harness
+  contract support.
 - `Dockerfile.api`: API container.
 - `Dockerfile.agent`: worker container.
 - `compose.yaml`: local API/worker build configuration.
@@ -94,11 +98,12 @@ Monitoring:
 10. Run tests and policy gates before sync/deploy.
 11. Track budget usage before each major stage.
 12. Publish a local preview artifact and browser-proof checks.
-13. Record the model/agent config that produced the change.
+13. Record the model/agent/harness config that produced the change.
 14. Return final status with events, changed files, checks, evidence, PR URL,
     deployment status, and promotion decision.
 15. Index terminal runs for lab history and model/agent promotion summaries.
-16. Expose model/runtime status, user quota usage, and cloud dispatch contracts.
+16. Expose model/runtime status, harness status, user quota usage, and cloud
+    dispatch contracts.
 
 ## Model And Agent Lab Layer
 
@@ -106,6 +111,8 @@ Every job carries a small lab contract:
 
 - `ModelSpec`: provider, model name, context window, cost tier, tool support.
 - `AgentSpec`: role, bound model, allowed commands, output contract.
+- `HarnessSpec`: selected runtime harness, execution contract, install hint,
+  source URLs, env requirements, and integration notes.
 - `PromotionDecision`: `promote`, `reject`, or `needs_review` with evidence.
 
 The default `local-deterministic` model and `repo-editor-v1` agent are explicit
@@ -113,14 +120,34 @@ so the deterministic MVP can be compared against future external SLM/LLM-backed
 agents without changing the repo dispatch contract.
 
 Terminal jobs are also written to a `lab_runs` index. This makes promotion
-outcomes queryable by model, agent, and status instead of burying them inside
-individual job payloads.
+outcomes queryable by model, agent, harness, and status instead of burying them
+inside individual job payloads.
 
 An OpenAI Responses-backed model path is available through the
 `gpt-5-coding` model and `openai-repo-editor-v1` agent. It is disabled by
 default and requires both `AGENT_CLOUD_ENABLE_OPENAI_AGENT=1` and
 `OPENAI_API_KEY`; otherwise the run fails as a configuration error instead of
 silently falling back to the deterministic model.
+
+## Agent Harness Index
+
+`GET /harnesses` exposes a curated top-20 harness list for cloud repo-editing
+workers. The index covers terminal coding agents, managed cloud coding agents,
+and production agent SDKs. It is intentionally a dispatch contract: the service
+records `harness_id`, includes `harness_spec` in the worker payload and final
+evidence, and passes `AGENT_CLOUD_HARNESS_ID` into ECS dry-run plans. It does
+not execute arbitrary third-party CLIs unless the worker image or adapter has
+been built for that harness.
+
+Use `local-template` for the deterministic local harness, one of the indexed
+harness IDs such as `openhands` or `openai-codex-cli`, or a custom safe ID like
+`custom:internal-runner`.
+
+```bash
+curl -sS http://127.0.0.1:8000/harnesses
+curl -sS http://127.0.0.1:8000/harnesses/openhands
+curl -sS 'http://127.0.0.1:8000/lab/runs?harness_id=local-template'
+```
 
 ## Simple Demo
 
@@ -214,6 +241,7 @@ curl -sS 'http://127.0.0.1:8000/lab/runs?model_id=local-deterministic&promotion_
 curl -sS http://127.0.0.1:8000/lab/summary
 open http://127.0.0.1:8000/lab
 curl -sS http://127.0.0.1:8000/models
+curl -sS http://127.0.0.1:8000/harnesses
 ```
 
 Inspect the worker payload that would be handed to an ECS/Fargate task:

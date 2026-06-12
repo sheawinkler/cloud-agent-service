@@ -7,10 +7,12 @@ accepts a user request, validates it, upgrades the prompt, creates a job, runs a
 repo-editing agent workflow, tests changes, applies policy gates, records
 evidence, and syncs review output through local mock, generic Git, or GitHub App
 paths.
-Terminal runs are indexed in `lab_runs` so model/agent promotion outcomes can be
-queried and summarized.
+Terminal runs are indexed in `lab_runs` so model/agent/harness promotion
+outcomes can be queried and summarized.
 Task suites, runtime status, optional auth/quotas, a lab UI, and ECS dry-run
-dispatch plans are present as productization scaffolding.
+dispatch plans are present as productization scaffolding. The harness registry
+pre-indexes 20 current agent harnesses and accepts `custom:<name>` harness IDs
+as dispatch contracts.
 
 Important boundary:
 The current implementation does not call AWS and does not perform a real
@@ -19,12 +21,15 @@ control flow. Generic Git jobs push review branches to origin. GitHub App jobs
 require app credentials before claiming live clone/push/PR behavior.
 OpenAI Responses-backed agent runs require explicit enablement and an API key;
 the default path is still deterministic and offline.
+Top-20 and custom harness IDs do not mean those third-party CLIs or managed
+agents execute; a worker image or adapter must implement the selected harness
+before live execution can be claimed.
 
 Mirendil framing:
 Treat each repo update as a minimal model lab run: ModelSpec + AgentSpec +
-bounded task + evidence -> PromotionDecision. The current default model is
-local-deterministic; do not claim external SLM/LLM inference unless wired and
-verified.
+HarnessSpec + bounded task + evidence -> PromotionDecision. The current default
+model is local-deterministic; do not claim external SLM/LLM inference unless
+wired and verified.
 
 Primary files:
 - app.py: FastAPI API.
@@ -33,6 +38,7 @@ Primary files:
 - orchestrator.py: local queue and runner.
 - worker.py: one-job container entry point.
 - cloud_dispatch.py: ECS/Fargate dry-run dispatch request builder.
+- harness_registry.py: top-20 agent harness index and custom harness contracts.
 - compose.yaml: Docker Compose for local API/worker builds.
 - EVALUATION.md: product and operational evaluation criteria.
 - examples/agent_contract.json: worker payload and final result example.
@@ -59,28 +65,31 @@ Monitor commands:
 - curl -sS http://127.0.0.1:8000/jobs/<job_id>
 - curl -sS http://127.0.0.1:8000/lab/summary
 - curl -sS http://127.0.0.1:8000/models
+- curl -sS http://127.0.0.1:8000/harnesses
 - curl -sS http://127.0.0.1:8000/integrations/cloud/status
 
 Expected successful flow:
 1. Receive prompt.
 2. Validate prompt, repo path, budgets, and runtime limits.
-3. Upgrade prompt into a concise implementation brief.
-4. Create job record and queue event.
-5. Dispatch local worker/container contract.
-6. Copy or clone repo into an isolated workspace.
-7. Record lab run config: model_id and agent_id.
-8. Execute deterministic local coding action.
-9. Run compile/test checks.
-10. Apply policy gates.
-11. Record preview/browser evidence.
-12. Sync review output and return final status plus promotion decision.
-13. Index the terminal run for lab summary and task-suite comparison.
+3. Select and record the harness contract.
+4. Upgrade prompt into a concise implementation brief.
+5. Create job record and queue event.
+6. Dispatch local worker/container contract.
+7. Copy or clone repo into an isolated workspace.
+8. Record lab run config: model_id, agent_id, and harness_id.
+9. Execute deterministic local coding action.
+10. Run compile/test checks.
+11. Apply policy gates.
+12. Record preview/browser evidence.
+13. Sync review output and return final status plus promotion decision.
+14. Index the terminal run for lab summary and task-suite comparison.
 
 Do not:
 - Treat mock PR URLs as real GitHub PRs.
 - Treat local-deterministic as live external model inference.
 - Treat local deployment artifacts as production deploys.
 - Treat ECS dispatch plans as submitted AWS tasks.
+- Treat indexed harness IDs as live adapter execution without worker proof.
 - Commit runtime SQLite databases, generated workspaces, or artifacts.
 - Add package dependencies without updating the allowlist and tests.
 - Log or persist secrets.
@@ -91,6 +100,8 @@ Useful API reads:
 - GET /lab/summary
 - GET /lab
 - GET /models
+- GET /harnesses
+- GET /harnesses/<harness_id>
 - GET /auth/status
 - GET /users/<user_id>/quota
 - GET /jobs/<job_id>/cloud-dispatch-plan

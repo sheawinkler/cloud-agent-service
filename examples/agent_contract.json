@@ -11,6 +11,7 @@
     "parent_job_id": null,
     "model_id": "local-deterministic",
     "agent_id": "repo-editor-v1",
+    "harness_id": "local-template",
     "model_spec": {
       "model_id": "local-deterministic",
       "provider": "local",
@@ -36,6 +37,28 @@
         "yarn"
       ],
       "output_contract": "job_result.v1"
+    },
+    "harness_spec": {
+      "harness_id": "local-template",
+      "name": "Local Deterministic Template Harness",
+      "category": "custom",
+      "rank": null,
+      "provider": "cloud-agent-service",
+      "runtime": "python-standard-library",
+      "execution_contract": "local-deterministic-edit.v1",
+      "repo_url": null,
+      "docs_url": "local://cloud-agent-service/harnesses/local-template",
+      "install_hint": "built in",
+      "env_requirements": [],
+      "strengths": [
+        "offline deterministic smoke path",
+        "stable tests",
+        "no external secrets"
+      ],
+      "integration_notes": [
+        "Default harness for local MVP proof.",
+        "Use top-20 or custom harness IDs to hand workers a different runtime contract."
+      ]
     },
     "normalized_prompt": "For my shopping website, create a buy button.",
     "acceptance_criteria": [
@@ -154,6 +177,28 @@
           "yarn"
         ],
         "output_contract": "job_result.v1"
+      },
+      "harness_spec": {
+        "harness_id": "local-template",
+        "name": "Local Deterministic Template Harness",
+        "category": "custom",
+        "rank": null,
+        "provider": "cloud-agent-service",
+        "runtime": "python-standard-library",
+        "execution_contract": "local-deterministic-edit.v1",
+        "repo_url": null,
+        "docs_url": "local://cloud-agent-service/harnesses/local-template",
+        "install_hint": "built in",
+        "env_requirements": [],
+        "strengths": [
+          "offline deterministic smoke path",
+          "stable tests",
+          "no external secrets"
+        ],
+        "integration_notes": [
+          "Default harness for local MVP proof.",
+          "Use top-20 or custom harness IDs to hand workers a different runtime contract."
+        ]
       },
       "preview_url": "local://preview/demo-job-001/index.html",
       "preview_artifact_path": "artifacts/previews/demo-job-001/index.html",

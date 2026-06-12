@@ -27,6 +27,7 @@ class CreateJobPayload(BaseModel):
     parent_job_id: str | None = None
     model_id: str = "local-deterministic"
     agent_id: str = "repo-editor-v1"
+    harness_id: str = "local-template"
     user_id: str = "local-user"
     base_branch: str = "main"
     deploy_policy: DeploymentPolicy = DeploymentPolicy.MANUAL
@@ -95,6 +96,19 @@ def model_agent_status() -> dict[str, Any]:
     return flow.model_agent_status()
 
 
+@app.get("/harnesses")
+def harness_status() -> dict[str, Any]:
+    return flow.harness_status()
+
+
+@app.get("/harnesses/{harness_id:path}")
+def get_harness(harness_id: str) -> dict[str, Any]:
+    try:
+        return asdict(flow.harness_registry.get(harness_id))
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="harness not found") from exc
+
+
 @app.post("/jobs")
 def create_job(payload: CreateJobPayload, background_tasks: BackgroundTasks) -> dict[str, Any]:
     request = _job_request_from_payload(payload)
@@ -133,6 +147,7 @@ def list_lab_runs(
     limit: int = 50,
     model_id: str | None = None,
     agent_id: str | None = None,
+    harness_id: str | None = None,
     promotion_status: PromotionStatus | None = None,
 ) -> dict[str, Any]:
     return {
@@ -140,6 +155,7 @@ def list_lab_runs(
             limit=limit,
             model_id=model_id,
             agent_id=agent_id,
+            harness_id=harness_id,
             promotion_status=promotion_status.value if promotion_status else None,
         )
     }
@@ -254,6 +270,7 @@ def continue_job(
         parent_job_id=job_id,
         model_id=parent["model_id"],
         agent_id=parent["agent_id"],
+        harness_id=parent["harness_id"],
         user_id=parent["user_id"],
         base_branch=parent["base_branch"],
         deploy_policy=DeploymentPolicy(parent["deploy_policy"]),
@@ -287,6 +304,7 @@ def _job_request_from_payload(payload: CreateJobPayload) -> JobRequest:
         parent_job_id=payload.parent_job_id,
         model_id=payload.model_id,
         agent_id=payload.agent_id,
+        harness_id=payload.harness_id,
         user_id=payload.user_id,
         base_branch=payload.base_branch,
         deploy_policy=payload.deploy_policy,
@@ -412,6 +430,7 @@ def _lab_dashboard_html() -> str:
             <th>User</th>
             <th>Model</th>
             <th>Agent</th>
+            <th>Harness</th>
             <th>Promotion</th>
             <th>Changed</th>
             <th>Tokens</th>
@@ -452,6 +471,7 @@ def _lab_dashboard_html() -> str:
           <td>${escapeHtml(run.user_id)}</td>
           <td>${escapeHtml(run.model_id)}</td>
           <td>${escapeHtml(run.agent_id)}</td>
+          <td>${escapeHtml(run.harness_id)}</td>
           <td class="status ${escapeHtml(run.promotion_status)}">
             ${escapeHtml(run.promotion_status)}
           </td>
