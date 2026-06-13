@@ -121,6 +121,22 @@ class CloudAgentServiceFlowTests(unittest.TestCase):
             self.assertEqual("local-deterministic", result.evidence["model_spec"]["model_id"])
             self.assertEqual("repo-editor-v1", result.evidence["agent_spec"]["agent_id"])
             self.assertEqual("local-template", result.evidence["harness_spec"]["harness_id"])
+            self.assertEqual(
+                "local-template.locked-down.v1",
+                result.evidence["security_profile"]["profile_id"],
+            )
+            self.assertEqual(
+                "local-template-adapter",
+                result.evidence["harness_adapter_result"]["adapter_id"],
+            )
+            self.assertEqual(
+                "executed",
+                result.evidence["harness_adapter_result"]["adapter_status"],
+            )
+            self.assertTrue(result.evidence["run_artifact"]["complete"])
+            self.assertTrue(result.policy_gate_results["artifact_policy"])
+            self.assertTrue(result.policy_gate_results["transcript_policy"])
+            self.assertTrue(result.policy_gate_results["security_profile_policy"])
             self.assertEqual("promote", result.promotion_decision["status"])
 
             workspace_index = root / "workspaces" / job_id / "repo" / "index.html"
@@ -130,6 +146,9 @@ class CloudAgentServiceFlowTests(unittest.TestCase):
             self.assertTrue(
                 (root / "artifacts" / "previews" / job_id / "browser-proof.json").exists()
             )
+            self.assertTrue(Path(result.evidence["run_artifact"]["artifact_path"]).exists())
+            self.assertTrue(Path(result.evidence["run_artifact"]["transcript_path"]).exists())
+            self.assertTrue(Path(result.evidence["run_artifact"]["diff_path"]).exists())
             self.assertGreater(flow.store.budget_tokens_used(job_id), 0)
             lab_run = flow.store.get_lab_run(job_id)
             self.assertEqual("local-deterministic", lab_run["model_id"])
@@ -155,23 +174,32 @@ class CloudAgentServiceFlowTests(unittest.TestCase):
                 [{"harness_id": "local-template", "promotion_status": "promote", "count": 1}],
                 summary["by_harness"],
             )
+            leaderboard = flow.store.lab_leaderboard()
+            self.assertEqual(1, len(leaderboard))
+            self.assertEqual("local-template", leaderboard[0]["harness_id"])
+            self.assertEqual(1, leaderboard[0]["promote_count"])
+            self.assertEqual(1.0, leaderboard[0]["promotion_rate"])
 
             expected_events = {
                 "job_created",
                 "job_queued",
                 "harness_selected",
                 "agent_dispatched",
+                "harness_adapter_selected",
+                "harness_security_profile_selected",
                 "repo_cloned",
                 "repo_analyzed",
                 "budget_charged",
                 "prompt_upgraded",
                 "plan_created",
                 "dependencies_requested",
+                "harness_adapter_finished",
                 "files_changed",
                 "tests_finished",
                 "policy_gate_result",
                 "preview_created",
                 "browser_proof_finished",
+                "run_artifact_created",
                 "branch_pushed",
                 "pr_created_or_updated",
                 "deployment_finished",
@@ -213,6 +241,14 @@ class CloudAgentServiceFlowTests(unittest.TestCase):
             self.assertEqual(
                 "local-deterministic-edit.v1",
                 payload.harness_spec["execution_contract"],
+            )
+            self.assertEqual(
+                "local-template-adapter",
+                payload.harness_adapter_contract["adapter_id"],
+            )
+            self.assertEqual(
+                "local-template.locked-down.v1",
+                payload.security_profile["profile_id"],
             )
             self.assertIn("policy_gate_results", payload.output_schema)
 
@@ -298,7 +334,80 @@ class CloudAgentServiceFlowTests(unittest.TestCase):
             self.assertEqual("custom:acme-runner", payload.harness_id)
             self.assertEqual("custom-harness.v1", payload.harness_spec["execution_contract"])
             self.assertEqual("custom:acme-runner", result.evidence["harness_spec"]["harness_id"])
+            self.assertEqual(
+                "contract_fallback",
+                result.evidence["harness_adapter_result"]["adapter_status"],
+            )
             self.assertEqual("custom:acme-runner", flow.store.get_lab_run(job_id)["harness_id"])
+
+    def test_pi_coding_agent_adapter_executes_when_enabled(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = self._build_repo(root)
+            script = root / "fake_pi_agent.py"
+            script.write_text(
+                "#!/usr/bin/env python3\n"
+                "import json\n"
+                "import pathlib\n"
+                "import sys\n"
+                "\n"
+                "repo = pathlib.Path(sys.argv[sys.argv.index('--repo') + 1])\n"
+                "result_path = pathlib.Path(sys.argv[sys.argv.index('--result') + 1])\n"
+                "target = repo / 'index.html'\n"
+                "content = target.read_text(encoding='utf-8')\n"
+                "button = '<button type=\"button\" data-agent=\"buy-button\">Buy</button>'\n"
+                "if button not in content:\n"
+                "    content = content.replace('</body>', f'  {button}\\n</body>', 1)\n"
+                "    target.write_text(content, encoding='utf-8')\n"
+                "result_path.write_text(json.dumps({\n"
+                "    'changed_files': ['index.html'],\n"
+                "    'commands_run': ['fake pi adapter'],\n"
+                "    'tests_passed': [],\n"
+                "    'tests_failed': [],\n"
+                "    'dependency_changes': [],\n"
+                "    'residual_risks': [],\n"
+                "    'transcript': ['fake pi adapter executed']\n"
+                "}), encoding='utf-8')\n",
+                encoding="utf-8",
+            )
+            script.chmod(0o755)
+
+            with patch.dict(
+                "os.environ",
+                {
+                    "AGENT_CLOUD_ENABLE_PI_CODING_AGENT": "1",
+                    "AGENT_CLOUD_PI_CODING_AGENT_CMD": str(script),
+                },
+            ):
+                flow = self._build_flow(root)
+                job_id = flow.create_job(
+                    JobRequest(
+                        prompt="For my shopping website, create a buy button.",
+                        repo_path=str(repo),
+                        deploy_policy=DeploymentPolicy.LOCAL,
+                        harness_id="pi-coding-agent",
+                    )
+                )
+                payload = flow.build_worker_payload(job_id)
+                result = flow.run_job(job_id)
+
+            self.assertEqual("pi-coding-agent", payload.harness_id)
+            self.assertTrue(payload.harness_adapter_contract["enabled"])
+            self.assertEqual(JobStatus.SUCCEEDED, result.status)
+            self.assertEqual("promote", result.promotion_decision["status"])
+            self.assertEqual(
+                "pi-coding-agent-adapter",
+                result.evidence["harness_adapter_result"]["adapter_id"],
+            )
+            self.assertEqual(
+                "executed",
+                result.evidence["harness_adapter_result"]["adapter_status"],
+            )
+            self.assertEqual(
+                "pi-coding-agent.cli-adapter.v1",
+                result.evidence["security_profile"]["profile_id"],
+            )
+            self.assertTrue(result.evidence["run_artifact"]["complete"])
 
     def test_job_store_migrates_legacy_lab_runs_before_harness_indexes(self):
         with tempfile.TemporaryDirectory() as tmp:

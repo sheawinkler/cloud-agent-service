@@ -14,6 +14,11 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
+from cloud_agent_service.artifact_schema import RunArtifact, RunArtifactWriter
+from cloud_agent_service.harness_adapters import (
+    HarnessAdapterRegistry,
+    HarnessExecutionRequest,
+)
 from cloud_agent_service.harness_registry import HarnessRegistry
 from cloud_agent_service.models import (
     AgentPlan,
@@ -34,6 +39,7 @@ from cloud_agent_service.models import (
     RiskLevel,
     WorkerJobPayload,
 )
+from cloud_agent_service.security_profiles import HarnessSecurityRegistry
 from cloud_agent_service.store import JobStore
 
 ALLOWED_PYTHON_MODULES = [
@@ -342,6 +348,8 @@ class Planner:
                 "residual_risks": "list[str]",
                 "evidence": "dict[str, object]",
                 "promotion_decision": "dict[str, object]",
+                "harness_adapter_result": "dict[str, object]",
+                "run_artifact": "dict[str, object]",
             },
         )
 
@@ -1098,6 +1106,9 @@ class AgentCloudFlow:
         self.artifacts_dir = Path(artifacts_dir)
         self.lab_registry = ModelAgentRegistry()
         self.harness_registry = HarnessRegistry()
+        self.harness_adapters = HarnessAdapterRegistry()
+        self.security_profiles = HarnessSecurityRegistry()
+        self.run_artifacts = RunArtifactWriter()
         self.validator = RequestValidator()
         self.upgrader = PromptUpgrader()
         self.planner = Planner()
@@ -1171,6 +1182,11 @@ class AgentCloudFlow:
         model_spec = self.lab_registry.model(request.model_id)
         agent_spec = self.lab_registry.agent(request.agent_id)
         harness_spec = self._harness_spec(request.harness_id)
+        security_profile = self.security_profiles.profile_for(
+            harness_spec,
+            request.max_runtime_seconds,
+        )
+        adapter_contract = self.harness_adapters.contract_for(harness_spec)
         normalized = self.upgrader.upgrade(request)
         plan = self.planner.create_plan(request, normalized)
         return WorkerJobPayload(
@@ -1189,6 +1205,8 @@ class AgentCloudFlow:
             model_spec=asdict(model_spec),
             agent_spec=asdict(agent_spec),
             harness_spec=asdict(harness_spec),
+            harness_adapter_contract=asdict(adapter_contract),
+            security_profile=asdict(security_profile),
             normalized_prompt=plan.normalized_prompt,
             acceptance_criteria=plan.acceptance_criteria,
             allowed_python_modules=plan.allowed_python_modules,
@@ -1312,6 +1330,11 @@ class AgentCloudFlow:
         model_spec = self.lab_registry.model(request.model_id)
         agent_spec = self.lab_registry.agent(request.agent_id)
         harness_spec = self._harness_spec(request.harness_id)
+        security_profile = self.security_profiles.profile_for(
+            harness_spec,
+            request.max_runtime_seconds,
+        )
+        adapter_contract = self.harness_adapters.contract_for(harness_spec)
         agent_result = self._empty_agent_result()
         evidence: dict[str, Any] = {}
 
@@ -1329,7 +1352,15 @@ class AgentCloudFlow:
                     "model_provider": model_spec.provider,
                     "agent_role": agent_spec.role,
                     "harness_contract": harness_spec.execution_contract,
+                    "adapter_id": adapter_contract.adapter_id,
+                    "security_profile_id": security_profile.profile_id,
                 },
+            )
+            self.store.add_event(job_id, "harness_adapter_selected", asdict(adapter_contract))
+            self.store.add_event(
+                job_id,
+                "harness_security_profile_selected",
+                asdict(security_profile),
             )
 
             github_token: str | None = None
@@ -1416,8 +1447,26 @@ class AgentCloudFlow:
                 {"modules": modules, "install_command": install_command},
             )
 
-            agent_result = self.agent.execute(workspace_repo, plan)
-            self._charge_budget(job_id, request, "agent_edit", 512, "local deterministic edit")
+            adapter_result = self.harness_adapters.execute(
+                HarnessExecutionRequest(
+                    job_id=job_id,
+                    repo_path=workspace_repo,
+                    plan=plan,
+                    harness_spec=harness_spec,
+                    security_profile=security_profile,
+                    artifacts_dir=self.artifacts_dir,
+                    max_runtime_seconds=request.max_runtime_seconds,
+                )
+            )
+            agent_result = adapter_result.agent_result()
+            self._charge_budget(
+                job_id,
+                request,
+                "agent_edit",
+                512,
+                f"harness adapter edit: {adapter_result.adapter_id}",
+            )
+            self.store.add_event(job_id, "harness_adapter_finished", asdict(adapter_result))
             self.store.add_event(
                 job_id,
                 "files_changed",
@@ -1436,15 +1485,20 @@ class AgentCloudFlow:
                 {"passed": tests_passed, "failed": tests_failed, "commands": commands_run},
             )
 
-            gates = self.policy_gate.evaluate(
+            base_gates = self.policy_gate.evaluate(
                 workspace_repo,
                 agent_result["changed_files"],
                 tests_failed,
                 request.max_changed_files,
             )
-            self.store.add_event(job_id, "policy_gate_result", gates)
-            if not all(gates.values()):
-                return self._fail(job_id, agent_result, gates, "not deployed: policy gate failed")
+            if not all(base_gates.values()):
+                self.store.add_event(job_id, "policy_gate_result", base_gates)
+                return self._fail(
+                    job_id,
+                    agent_result,
+                    base_gates,
+                    "not deployed: policy gate failed",
+                )
 
             preview = self.preview_publisher.publish(
                 workspace_repo,
@@ -1460,9 +1514,46 @@ class AgentCloudFlow:
                 model_spec,
                 agent_spec,
                 harness_spec,
+                security_profile,
+                adapter_result,
             )
+            run_artifact = self.run_artifacts.write(
+                artifacts_dir=self.artifacts_dir,
+                job_id=job_id,
+                repo_path=workspace_repo,
+                prompt=request.prompt,
+                normalized_prompt=normalized.brief,
+                repo_provider=request.repo_provider.value,
+                model_id=request.model_id,
+                agent_id=request.agent_id,
+                harness_id=harness_spec.harness_id,
+                adapter_result=adapter_result,
+                security_profile=security_profile,
+                base_policy_gates=base_gates,
+                preview=asdict(preview),
+            )
+            evidence = self._attach_run_artifact(evidence, run_artifact)
             self.store.add_event(job_id, "preview_created", asdict(preview))
             self.store.add_event(job_id, "browser_proof_finished", preview.checks)
+            self.store.add_event(
+                job_id,
+                "run_artifact_created",
+                {
+                    "schema_version": run_artifact.schema_version,
+                    "artifact_path": run_artifact.artifact_path,
+                    "complete": run_artifact.complete,
+                },
+            )
+            gates = run_artifact.policy_gate_results
+            self.store.add_event(job_id, "policy_gate_result", gates)
+            if not all(gates.values()):
+                return self._fail(
+                    job_id,
+                    agent_result,
+                    gates,
+                    "not deployed: policy gate failed",
+                    evidence=evidence,
+                )
 
             self.store.update_job(job_id, status=JobStatus.SYNCING)
             if request.repo_provider == RepoProvider.GITHUB:
@@ -1597,6 +1688,8 @@ class AgentCloudFlow:
         model_spec: ModelSpec,
         agent_spec: AgentSpec,
         harness_spec: HarnessSpec,
+        security_profile: Any,
+        adapter_result: Any,
     ) -> dict[str, Any]:
         return {
             "job_id": job_id,
@@ -1606,12 +1699,27 @@ class AgentCloudFlow:
             "model_spec": asdict(model_spec),
             "agent_spec": asdict(agent_spec),
             "harness_spec": asdict(harness_spec),
+            "security_profile": asdict(security_profile),
+            "harness_adapter_result": asdict(adapter_result),
             "preview_url": preview.preview_url,
             "preview_artifact_path": preview.artifact_path,
             "browser_proof_path": preview.browser_proof_path,
             "browser_checks": preview.checks,
             "repo_profile": asdict(repo_profile),
             "next_action": "review_pr",
+        }
+
+    @staticmethod
+    def _attach_run_artifact(evidence: dict[str, Any], artifact: RunArtifact) -> dict[str, Any]:
+        return {
+            **evidence,
+            "run_artifact": {
+                "schema_version": artifact.schema_version,
+                "artifact_path": artifact.artifact_path,
+                "transcript_path": artifact.transcript_path,
+                "diff_path": artifact.diff_path,
+                "complete": artifact.complete,
+            },
         }
 
     @staticmethod
@@ -1628,6 +1736,7 @@ class AgentCloudFlow:
             "policy_gate_results": gates,
             "deployment_status": deployment_status,
             "preview_url": evidence.get("preview_url"),
+            "run_artifact": evidence.get("run_artifact"),
         }
         if status != JobStatus.SUCCEEDED:
             return PromotionDecision(
@@ -1639,6 +1748,12 @@ class AgentCloudFlow:
             return PromotionDecision(
                 status=PromotionStatus.REJECT,
                 reason="Tests or policy gates failed.",
+                evidence=base_evidence,
+            )
+        if not evidence.get("run_artifact", {}).get("complete"):
+            return PromotionDecision(
+                status=PromotionStatus.REJECT,
+                reason="Run artifact was incomplete; promotion requires replayable evidence.",
                 evidence=base_evidence,
             )
         if deployment_status.startswith("deployed:"):
@@ -1788,13 +1903,15 @@ class AgentCloudFlow:
         agent_result: dict[str, Any],
         gates: dict[str, bool],
         deployment_status: str,
+        evidence: dict[str, Any] | None = None,
     ) -> JobResult:
+        evidence = evidence or {}
         promotion_decision = self._promotion_decision(
             status=JobStatus.FAILED,
             agent_result=agent_result,
             gates=gates,
             deployment_status=deployment_status,
-            evidence={},
+            evidence=evidence,
         )
         result = self._result(
             job_id=job_id,
@@ -1804,7 +1921,7 @@ class AgentCloudFlow:
             pr_url=None,
             deployment_status=deployment_status,
             residual_risks=["Validation failed; branch was not synced or deployed."],
-            evidence={},
+            evidence=evidence,
             promotion_decision=promotion_decision,
         )
         self.store.update_job(job_id, status=JobStatus.FAILED, result_json=asdict(result))

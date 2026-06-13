@@ -449,6 +449,53 @@ class JobStore:
             "by_model_agent_harness": [dict(row) for row in by_model_agent_harness_rows],
         }
 
+    def lab_leaderboard(self, limit: int = 50) -> list[dict[str, Any]]:
+        limit = max(1, min(limit, 200))
+        with closing(self._connect()) as conn:
+            rows = conn.execute(
+                """
+                SELECT
+                    model_id,
+                    agent_id,
+                    harness_id,
+                    COUNT(*) AS total_runs,
+                    SUM(CASE WHEN promotion_status = 'promote' THEN 1 ELSE 0 END)
+                        AS promote_count,
+                    SUM(CASE WHEN promotion_status = 'needs_review' THEN 1 ELSE 0 END)
+                        AS needs_review_count,
+                    SUM(CASE WHEN promotion_status = 'reject' THEN 1 ELSE 0 END)
+                        AS reject_count,
+                    AVG(changed_files_count) AS avg_changed_files,
+                    AVG(tests_failed_count) AS avg_tests_failed,
+                    AVG(tokens_used) AS avg_tokens_used
+                FROM lab_runs
+                GROUP BY model_id, agent_id, harness_id
+                ORDER BY promote_count DESC, total_runs DESC, model_id, agent_id, harness_id
+                LIMIT ?
+                """,
+                (limit,),
+            ).fetchall()
+        leaderboard: list[dict[str, Any]] = []
+        for row in rows:
+            total_runs = int(row["total_runs"])
+            promote_count = int(row["promote_count"])
+            leaderboard.append(
+                {
+                    "model_id": row["model_id"],
+                    "agent_id": row["agent_id"],
+                    "harness_id": row["harness_id"],
+                    "total_runs": total_runs,
+                    "promote_count": promote_count,
+                    "needs_review_count": int(row["needs_review_count"]),
+                    "reject_count": int(row["reject_count"]),
+                    "promotion_rate": promote_count / total_runs if total_runs else 0.0,
+                    "avg_changed_files": float(row["avg_changed_files"] or 0.0),
+                    "avg_tests_failed": float(row["avg_tests_failed"] or 0.0),
+                    "avg_tokens_used": float(row["avg_tokens_used"] or 0.0),
+                }
+            )
+        return leaderboard
+
     def user_usage(self, user_id: str) -> dict[str, Any]:
         with closing(self._connect()) as conn:
             jobs = conn.execute(

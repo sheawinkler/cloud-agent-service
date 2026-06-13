@@ -20,8 +20,13 @@ class ProjectArtifactTests(unittest.TestCase):
         self.assertIn("model_spec", payload["job_payload"])
         self.assertIn("agent_spec", payload["job_payload"])
         self.assertIn("harness_spec", payload["job_payload"])
+        self.assertIn("harness_adapter_contract", payload["job_payload"])
+        self.assertIn("security_profile", payload["job_payload"])
         self.assertEqual("local-template", payload["job_payload"]["harness_id"])
         self.assertIn("harness_spec", payload["final_result"]["evidence"])
+        self.assertIn("harness_adapter_result", payload["final_result"]["evidence"])
+        self.assertIn("security_profile", payload["final_result"]["evidence"])
+        self.assertIn("run_artifact", payload["final_result"]["evidence"])
         self.assertIn("promotion_decision", payload["final_result"])
 
     def test_demo_local_flow_succeeds(self):
@@ -64,10 +69,11 @@ class ProjectArtifactTests(unittest.TestCase):
         )
         payload = json.loads(result.stdout)
 
-        self.assertEqual("shopping_button_policy_suite", payload["suite_id"])
+        self.assertEqual("repo_edit_replay_corpus_v1", payload["suite_id"])
         self.assertEqual(1.0, payload["score"])
-        self.assertEqual(3, len(payload["tasks"]))
-        self.assertEqual(3, payload["lab_summary"]["total_runs"])
+        self.assertEqual(10, len(payload["tasks"]))
+        self.assertEqual(10, payload["lab_summary"]["total_runs"])
+        self.assertGreaterEqual(len(payload["leaderboard"]), 1)
         self.assertIn("promote", payload["lab_summary"]["by_promotion_status"])
         self.assertIn("needs_review", payload["lab_summary"]["by_promotion_status"])
         self.assertIn("reject", payload["lab_summary"]["by_promotion_status"])

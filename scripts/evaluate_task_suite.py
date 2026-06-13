@@ -10,47 +10,18 @@ from typing import Any
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from cloud_agent_service.models import (  # noqa: E402
-    DeploymentPolicy,
     JobRequest,
     JobStatus,
-    PromotionStatus,
     TaskCase,
     TaskSuite,
 )
 from cloud_agent_service.pipeline import AgentCloudFlow  # noqa: E402
 from cloud_agent_service.store import JobStore  # noqa: E402
+from cloud_agent_service.task_corpus import default_replayable_corpus  # noqa: E402
 
 
 def default_suite() -> TaskSuite:
-    return TaskSuite(
-        suite_id="shopping_button_policy_suite",
-        cases=[
-            TaskCase(
-                task_id="shopping_buy_button_local",
-                prompt="For my shopping website, create a buy button.",
-                deploy_policy=DeploymentPolicy.LOCAL,
-                expected_job_status=JobStatus.SUCCEEDED,
-                expected_promotion_status=PromotionStatus.PROMOTE,
-                expected_changed_files=["index.html"],
-            ),
-            TaskCase(
-                task_id="shopping_buy_button_manual",
-                prompt="For my shopping website, create a buy button.",
-                deploy_policy=DeploymentPolicy.MANUAL,
-                expected_job_status=JobStatus.SUCCEEDED,
-                expected_promotion_status=PromotionStatus.NEEDS_REVIEW,
-                expected_changed_files=["index.html"],
-            ),
-            TaskCase(
-                task_id="shopping_budget_guard",
-                prompt="For my shopping website, create a buy button.",
-                deploy_policy=DeploymentPolicy.LOCAL,
-                expected_job_status=JobStatus.FAILED,
-                expected_promotion_status=PromotionStatus.REJECT,
-                token_budget=10,
-            ),
-        ],
-    )
+    return default_replayable_corpus()
 
 
 def build_shopping_repo(root: Path, task_id: str) -> Path:
@@ -84,6 +55,7 @@ def evaluate_suite(suite: TaskSuite | None = None) -> dict[str, Any]:
             "checks_total": checks_total,
             "tasks": task_results,
             "lab_summary": flow.store.lab_summary(),
+            "leaderboard": flow.store.lab_leaderboard(),
         }
 
 
@@ -94,6 +66,7 @@ def _run_case(flow: AgentCloudFlow, root: Path, case: TaskCase) -> dict[str, Any
             prompt=case.prompt,
             repo_path=str(repo),
             deploy_policy=case.deploy_policy,
+            harness_id=case.harness_id,
             token_budget=case.token_budget,
             max_changed_files=case.max_changed_files,
         )
@@ -112,7 +85,15 @@ def _run_case(flow: AgentCloudFlow, root: Path, case: TaskCase) -> dict[str, Any
             path in result.changed_files for path in case.expected_changed_files
         ),
     }
-    if case.expected_changed_files:
+    run_artifact = result.evidence.get("run_artifact", {})
+    if case.expected_job_status == JobStatus.SUCCEEDED:
+        checks["run_artifact_complete"] = run_artifact.get("complete") is True
+        checks["artifact_policy_gate"] = (
+            result.policy_gate_results.get("artifact_policy") is True
+        )
+    else:
+        checks["run_artifact_not_required"] = run_artifact == {}
+    if "index.html" in case.expected_changed_files:
         checks["buy_button_present"] = 'data-agent="buy-button"' in workspace_html
     return {
         "task_id": case.task_id,
@@ -124,8 +105,10 @@ def _run_case(flow: AgentCloudFlow, root: Path, case: TaskCase) -> dict[str, Any
             "job_status": result.status.value,
             "promotion_status": result.promotion_decision.get("status"),
             "deployment_status": result.deployment_status,
+            "harness_id": case.harness_id,
             "changed_files": result.changed_files,
             "tests_failed": result.tests_failed,
+            "run_artifact_complete": run_artifact.get("complete"),
         },
     }
 

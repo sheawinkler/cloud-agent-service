@@ -60,6 +60,40 @@
         "Use top-20 or custom harness IDs to hand workers a different runtime contract."
       ]
     },
+    "harness_adapter_contract": {
+      "adapter_id": "local-template-adapter",
+      "harness_id": "local-template",
+      "mode": "local-deterministic",
+      "command_template": [],
+      "input_contract": "harness_execution_request.v1",
+      "output_contract": "harness_execution_result.v1",
+      "enabled": true,
+      "notes": [
+        "Executes deterministic local templates.",
+        "For non-local harness IDs this is a contract fallback, not live harness execution."
+      ]
+    },
+    "security_profile": {
+      "profile_id": "local-template.locked-down.v1",
+      "harness_id": "local-template",
+      "network_policy": "none",
+      "allowed_commands": [
+        "python3 -m compileall ."
+      ],
+      "readable_paths": [
+        "repo/**"
+      ],
+      "writable_paths": [
+        "repo/**",
+        "artifacts/runs/**"
+      ],
+      "secret_env_vars": [],
+      "max_runtime_seconds": 600,
+      "log_redaction_patterns": [
+        "sk-[A-Za-z0-9_-]+",
+        "AKIA[0-9A-Z]{16}"
+      ]
+    },
     "normalized_prompt": "For my shopping website, create a buy button.",
     "acceptance_criteria": [
       "Inspect the repository before editing.",
@@ -106,7 +140,9 @@
       "deployment_status": "str",
       "residual_risks": "list[str]",
       "evidence": "dict[str, object]",
-      "promotion_decision": "dict[str, object]"
+      "promotion_decision": "dict[str, object]",
+      "harness_adapter_result": "dict[str, object]",
+      "run_artifact": "dict[str, object]"
     }
   },
   "budget_ledger_example": [
@@ -141,7 +177,10 @@
       "diff_policy": true,
       "protected_path_policy": true,
       "dependency_policy": true,
-      "deployment_policy": true
+      "deployment_policy": true,
+      "artifact_policy": true,
+      "transcript_policy": true,
+      "security_profile_policy": true
     },
     "pr_url": "local://github/pr/demo-job-001",
     "deployment_status": "ready: manual approval required",
@@ -200,12 +239,61 @@
           "Use top-20 or custom harness IDs to hand workers a different runtime contract."
         ]
       },
+      "security_profile": {
+        "profile_id": "local-template.locked-down.v1",
+        "harness_id": "local-template",
+        "network_policy": "none",
+        "allowed_commands": [
+          "python3 -m compileall ."
+        ],
+        "readable_paths": [
+          "repo/**"
+        ],
+        "writable_paths": [
+          "repo/**",
+          "artifacts/runs/**"
+        ],
+        "secret_env_vars": [],
+        "max_runtime_seconds": 600,
+        "log_redaction_patterns": [
+          "sk-[A-Za-z0-9_-]+",
+          "AKIA[0-9A-Z]{16}"
+        ]
+      },
+      "harness_adapter_result": {
+        "adapter_id": "local-template-adapter",
+        "adapter_status": "executed",
+        "changed_files": [
+          "index.html"
+        ],
+        "commands_run": [],
+        "tests_passed": [],
+        "tests_failed": [],
+        "dependency_changes": [],
+        "residual_risks": [],
+        "transcript": [
+          "adapter=local-template-adapter",
+          "harness_id=local-template",
+          "action=added deterministic buy button"
+        ],
+        "raw_artifacts": {
+          "deterministic_template": true,
+          "fallback": false
+        }
+      },
       "preview_url": "local://preview/demo-job-001/index.html",
       "preview_artifact_path": "artifacts/previews/demo-job-001/index.html",
       "browser_proof_path": "artifacts/previews/demo-job-001/browser-proof.json",
       "browser_checks": {
         "html_preview_available": true,
         "buy_button_present": true
+      },
+      "run_artifact": {
+        "schema_version": "run-artifact.v1",
+        "artifact_path": "artifacts/runs/demo-job-001/run-artifact.json",
+        "transcript_path": "artifacts/runs/demo-job-001/transcript.txt",
+        "diff_path": "artifacts/runs/demo-job-001/diff.patch",
+        "complete": true
       },
       "repo_profile": {
         "package_manager": null,
@@ -228,7 +316,25 @@
           "index.html"
         ],
         "deployment_status": "ready: manual approval required",
-        "preview_url": "local://preview/demo-job-001/index.html"
+        "preview_url": "local://preview/demo-job-001/index.html",
+        "policy_gate_results": {
+          "repo_tests": true,
+          "secret_scan": true,
+          "diff_policy": true,
+          "protected_path_policy": true,
+          "dependency_policy": true,
+          "deployment_policy": true,
+          "artifact_policy": true,
+          "transcript_policy": true,
+          "security_profile_policy": true
+        },
+        "run_artifact": {
+          "schema_version": "run-artifact.v1",
+          "artifact_path": "artifacts/runs/demo-job-001/run-artifact.json",
+          "transcript_path": "artifacts/runs/demo-job-001/transcript.txt",
+          "diff_path": "artifacts/runs/demo-job-001/diff.patch",
+          "complete": true
+        }
       }
     }
   }

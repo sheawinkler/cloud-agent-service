@@ -10,7 +10,9 @@ AWS/Git rollout: durable queue claiming, worker payloads, budget ledger, event
 streaming, repo profiling, repo memory, model/agent run metadata, approval
 gates, continuation, lab-run summaries, task-suite evaluation, optional
 API-key/usage controls, a ranked harness index with a top-20 slice, and an ECS
-dry-run dispatch contract.
+dry-run dispatch contract. The next productized layer adds a harness adapter
+ABI, per-harness security profiles, replayable run artifacts, a task corpus,
+and a model/agent/harness leaderboard.
 
 Local repo jobs still use mock PR and deployment artifacts. Generic Git jobs
 clone from `git_url` and push an agent branch back to `origin`. GitHub repo jobs
@@ -41,9 +43,9 @@ User Request
 | 6. Dispatch worker      |
 | 7. Copy/clone workspace |
 | 8. Analyze repo         |
-| 9. Apply agent edit     |
+| 9. Apply harness edit   |
 | 10. Run tests + gates   |
-| 11. Preview + proof     |
+| 11. Preview + artifact  |
 | 12. PR sync + deploy    |
 +-------------------------+
     |
@@ -73,6 +75,13 @@ Monitoring:
 - `cloud_dispatch.py`: AWS ECS/Fargate dry-run dispatch request builder.
 - `harness_registry.py`: curated agent harness index, top-20 slice, and custom
   harness contract support.
+- `harness_adapters.py`: adapter ABI plus deterministic local and opt-in Pi
+  coding-agent adapter execution.
+- `security_profiles.py`: per-harness command, secret, path, network, and
+  runtime security contracts.
+- `artifact_schema.py`: replayable run artifact, transcript, diff, and artifact
+  policy generation.
+- `task_corpus.py`: replayable task corpus used by API and evaluator.
 - `Dockerfile.api`: API container.
 - `Dockerfile.agent`: worker container.
 - `compose.yaml`: local API/worker build configuration.
@@ -104,6 +113,8 @@ Monitoring:
 15. Index terminal runs for lab history and model/agent promotion summaries.
 16. Expose model/runtime status, harness status, user quota usage, and cloud
     dispatch contracts.
+17. Record adapter/security/run-artifact evidence before a run can be promoted.
+18. Compare model/agent/harness tuples with a leaderboard and replayable corpus.
 
 ## Model And Agent Lab Layer
 
@@ -121,7 +132,8 @@ agents without changing the repo dispatch contract.
 
 Terminal jobs are also written to a `lab_runs` index. This makes promotion
 outcomes queryable by model, agent, harness, and status instead of burying them
-inside individual job payloads.
+inside individual job payloads. `GET /lab/leaderboard` ranks model/agent/harness
+tuples by promote count, promotion rate, and average run metrics.
 
 An OpenAI Responses-backed model path is available through the
 `gpt-5-coding` model and `openai-repo-editor-v1` agent. It is disabled by
@@ -145,11 +157,29 @@ harness IDs such as `factory-droid`, `pi-coding-agent`, `hermes-agent`,
 `openhands`, or `openai-codex-cli`, or a custom safe ID like
 `custom:internal-runner`.
 
+The default `local-template` adapter executes deterministic local templates.
+The `pi-coding-agent` adapter is the first real external CLI adapter contract:
+it only runs when `AGENT_CLOUD_ENABLE_PI_CODING_AGENT=1` or
+`AGENT_CLOUD_ENABLE_EXTERNAL_HARNESS=1` and
+`AGENT_CLOUD_PI_CODING_AGENT_CMD` points to an executable command. Other indexed
+harnesses remain dispatch contracts until their adapters are implemented and
+verified.
+
 ```bash
 curl -sS http://127.0.0.1:8000/harnesses
 curl -sS http://127.0.0.1:8000/harnesses/factory-droid
 curl -sS 'http://127.0.0.1:8000/lab/runs?harness_id=local-template'
 ```
+
+## Replay Evidence
+
+Successful runs write `artifacts/runs/<job_id>/run-artifact.json` plus a
+transcript and diff/fingerprint file. Promotion gate v2 requires this replay
+artifact to be complete, the transcript to exist, and the harness security
+profile to be attached before returning `promote`.
+
+`GET /tasks/corpus` exposes the default replayable task corpus used by
+`scripts/evaluate_task_suite.py`.
 
 ## Simple Demo
 
@@ -241,6 +271,8 @@ List lab runs and summarize promotion outcomes:
 curl -sS http://127.0.0.1:8000/lab/runs
 curl -sS 'http://127.0.0.1:8000/lab/runs?model_id=local-deterministic&promotion_status=promote'
 curl -sS http://127.0.0.1:8000/lab/summary
+curl -sS http://127.0.0.1:8000/lab/leaderboard
+curl -sS http://127.0.0.1:8000/tasks/corpus
 open http://127.0.0.1:8000/lab
 curl -sS http://127.0.0.1:8000/models
 curl -sS http://127.0.0.1:8000/harnesses

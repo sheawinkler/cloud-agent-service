@@ -82,6 +82,7 @@ class TaskCase:
     expected_job_status: JobStatus = JobStatus.SUCCEEDED
     expected_promotion_status: PromotionStatus = PromotionStatus.NEEDS_REVIEW
     expected_changed_files: list[str] = field(default_factory=list)
+    harness_id: str = "local-template"
     token_budget: int = 8_000
     max_changed_files: int = 12
 
@@ -171,6 +172,8 @@ class WorkerJobPayload:
     model_spec: dict[str, Any]
     agent_spec: dict[str, Any]
     harness_spec: dict[str, Any]
+    harness_adapter_contract: dict[str, Any]
+    security_profile: dict[str, Any]
     normalized_prompt: str
     acceptance_criteria: list[str]
     allowed_python_modules: list[str]

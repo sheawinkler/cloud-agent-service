@@ -13,6 +13,9 @@ Task suites, runtime status, optional auth/quotas, a lab UI, and ECS dry-run
 dispatch plans are present as productization scaffolding. The harness registry
 pre-indexes current agent harnesses, exposes a top_20 slice, and accepts
 `custom:<name>` harness IDs as dispatch contracts.
+Harness execution goes through an adapter ABI, attaches a per-harness security
+profile, writes replayable run artifacts, and feeds a model/agent/harness
+leaderboard.
 
 Important boundary:
 The current implementation does not call AWS and does not perform a real
@@ -24,6 +27,9 @@ the default path is still deterministic and offline.
 Ranked and custom harness IDs do not mean those third-party CLIs or managed
 agents execute; a worker image or adapter must implement the selected harness
 before live execution can be claimed.
+The default local-template adapter is deterministic. The pi-coding-agent
+adapter is opt-in via AGENT_CLOUD_ENABLE_PI_CODING_AGENT or
+AGENT_CLOUD_ENABLE_EXTERNAL_HARNESS plus AGENT_CLOUD_PI_CODING_AGENT_CMD.
 
 Mirendil framing:
 Treat each repo update as a minimal model lab run: ModelSpec + AgentSpec +
@@ -40,6 +46,11 @@ Primary files:
 - cloud_dispatch.py: ECS/Fargate dry-run dispatch request builder.
 - harness_registry.py: ranked agent harness index, top_20 slice, and custom
   harness contracts.
+- harness_adapters.py: adapter ABI plus local-template and opt-in Pi adapters.
+- security_profiles.py: harness command, secret, path, network, and runtime
+  boundaries.
+- artifact_schema.py: run-artifact.json, transcript, diff, and artifact gates.
+- task_corpus.py: shared replayable task corpus.
 - compose.yaml: Docker Compose for local API/worker builds.
 - EVALUATION.md: product and operational evaluation criteria.
 - examples/agent_contract.json: worker payload and final result example.
@@ -65,6 +76,8 @@ Monitor commands:
 - docker --context orbstack compose -f compose.yaml logs --tail=120 api
 - curl -sS http://127.0.0.1:8000/jobs/<job_id>
 - curl -sS http://127.0.0.1:8000/lab/summary
+- curl -sS http://127.0.0.1:8000/lab/leaderboard
+- curl -sS http://127.0.0.1:8000/tasks/corpus
 - curl -sS http://127.0.0.1:8000/models
 - curl -sS http://127.0.0.1:8000/harnesses
 - curl -sS http://127.0.0.1:8000/integrations/cloud/status
@@ -78,10 +91,10 @@ Expected successful flow:
 6. Dispatch local worker/container contract.
 7. Copy or clone repo into an isolated workspace.
 8. Record lab run config: model_id, agent_id, and harness_id.
-9. Execute deterministic local coding action.
+9. Execute deterministic or selected adapter coding action.
 10. Run compile/test checks.
 11. Apply policy gates.
-12. Record preview/browser evidence.
+12. Record preview/browser/run-artifact evidence.
 13. Sync review output and return final status plus promotion decision.
 14. Index the terminal run for lab summary and task-suite comparison.
 
@@ -99,6 +112,8 @@ Useful API reads:
 - GET /lab/runs
 - GET /lab/runs?model_id=local-deterministic&promotion_status=promote
 - GET /lab/summary
+- GET /lab/leaderboard
+- GET /tasks/corpus
 - GET /lab
 - GET /models
 - GET /harnesses

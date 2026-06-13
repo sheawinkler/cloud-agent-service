@@ -16,6 +16,7 @@ from cloud_agent_service.models import DeploymentPolicy, JobRequest, PromotionSt
 from cloud_agent_service.orchestrator import LocalJobQueue, LocalOrchestrator
 from cloud_agent_service.pipeline import AgentCloudFlow, RequestValidationError
 from cloud_agent_service.store import JobStore
+from cloud_agent_service.task_corpus import default_replayable_corpus
 
 
 class CreateJobPayload(BaseModel):
@@ -166,9 +167,19 @@ def lab_summary() -> dict[str, Any]:
     return flow.store.lab_summary()
 
 
+@app.get("/lab/leaderboard")
+def lab_leaderboard(limit: int = 50) -> dict[str, Any]:
+    return {"leaderboard": flow.store.lab_leaderboard(limit=limit)}
+
+
 @app.get("/lab", response_class=HTMLResponse)
 def lab_dashboard() -> str:
     return _lab_dashboard_html()
+
+
+@app.get("/tasks/corpus")
+def task_corpus() -> dict[str, Any]:
+    return asdict(default_replayable_corpus())
 
 
 @app.get("/users/{user_id}/quota")
@@ -422,6 +433,24 @@ def _lab_dashboard_html() -> str:
     </header>
     <section class="summary" id="summary"></section>
     <section>
+      <h2>Leaderboard</h2>
+      <table>
+        <thead>
+          <tr>
+            <th>Model</th>
+            <th>Agent</th>
+            <th>Harness</th>
+            <th>Runs</th>
+            <th>Promote</th>
+            <th>Needs Review</th>
+            <th>Reject</th>
+            <th>Rate</th>
+          </tr>
+        </thead>
+        <tbody id="leaderboard"></tbody>
+      </table>
+    </section>
+    <section>
       <h2>Recent Runs</h2>
       <table>
         <thead>
@@ -452,8 +481,9 @@ def _lab_dashboard_html() -> str:
     }
 
     async function loadLab() {
-      const [summary, runs] = await Promise.all([
+      const [summary, leaderboard, runs] = await Promise.all([
         fetch('/lab/summary').then((response) => response.json()),
+        fetch('/lab/leaderboard').then((response) => response.json()),
         fetch('/lab/runs?limit=50').then((response) => response.json())
       ]);
       const statuses = summary.by_promotion_status || {};
@@ -465,6 +495,19 @@ def _lab_dashboard_html() -> str:
       ].map(([label, value]) =>
         `<div class="metric"><strong>${escapeHtml(value)}</strong>${escapeHtml(label)}</div>`
       ).join('');
+      document.getElementById('leaderboard').innerHTML =
+        (leaderboard.leaderboard || []).map((row) => `
+        <tr>
+          <td>${escapeHtml(row.model_id)}</td>
+          <td>${escapeHtml(row.agent_id)}</td>
+          <td>${escapeHtml(row.harness_id)}</td>
+          <td>${escapeHtml(row.total_runs)}</td>
+          <td>${escapeHtml(row.promote_count)}</td>
+          <td>${escapeHtml(row.needs_review_count)}</td>
+          <td>${escapeHtml(row.reject_count)}</td>
+          <td>${escapeHtml(Math.round((row.promotion_rate || 0) * 100))}%</td>
+        </tr>
+      `).join('');
       document.getElementById('runs').innerHTML = (runs.runs || []).map((run) => `
         <tr>
           <td>${escapeHtml(run.job_id)}</td>

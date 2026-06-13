@@ -19,11 +19,15 @@ the deploy boundary when evidence is weak.
 | Repo memory | Follow-up jobs can reuse prior repo context. | `repo_memory_loaded` is emitted and `repo_memory` records the last profile. |
 | Model/agent/harness tracking | A repo update is attributable to a specific lab config. | Worker payload and result evidence include `ModelSpec`, `AgentSpec`, and `HarnessSpec`. |
 | Lab history | Model/agent/harness runs can be compared across jobs. | `lab_runs` records terminal runs and `/lab/summary` groups promotions. |
+| Leaderboard | Strong model/agent/harness tuples are ranked from terminal outcomes. | `/lab/leaderboard` reports promotion rate and average run metrics. |
 | Harness portability | The control plane can route to known and custom agent harness contracts. | `/harnesses` exposes a ranked registry with a top-20 slice, and `custom:<name>` harness IDs are accepted as dispatch contracts. |
+| Harness adapter ABI | Harness execution is a stable contract rather than a hard-coded local action. | Worker payloads include `harness_adapter_contract`, and evidence includes `harness_adapter_result`. |
+| Security profiles | Harnesses declare command, secret, path, network, and runtime boundaries. | Worker payloads and evidence include `security_profile`. |
+| Replay artifacts | Successful runs leave replayable transcript and diff evidence. | `artifacts/runs/<job_id>/run-artifact.json` is complete before promotion. |
 | Safety | Failed tests or policies stop sync/deploy. | Gate failure returns `failed` before mock PR/deploy. |
 | Preview proof | Reviewers get inspectable evidence before deploy. | Final result includes preview URL, preview artifact, and browser-proof checks. |
 | Promotion decision | The run has a clear model/agent verdict. | Final result returns `promote`, `reject`, or `needs_review` with evidence. |
-| Task-suite comparison | Multiple scenarios can be compared as a lab batch. | `scripts/evaluate_task_suite.py` scores promote/review/reject outcomes. |
+| Task-suite comparison | Multiple scenarios can be compared as a lab batch. | `scripts/evaluate_task_suite.py` scores the shared `/tasks/corpus` cases. |
 | Git sync | Jobs are not locked to one Git forge. | Generic Git jobs clone a remote and push a review branch. |
 | GitHub sync | GitHub jobs can use app-scoped credentials instead of user tokens. | Configured GitHub App jobs clone, push a branch, and create or reuse a PR. |
 | Auth and quotas | Multi-tenant controls can be enabled without changing handlers. | `AGENT_CLOUD_API_KEYS` and `AGENT_CLOUD_USER_TOKEN_QUOTA` gate requests. |
@@ -42,6 +46,10 @@ the deploy boundary when evidence is weak.
 - Preview proof pass rate.
 - Promotion status distribution by model, agent, and harness.
 - Harness dispatch plans by promotion status.
+- Harness adapter execution status by harness.
+- Security profile selected by harness.
+- Run artifact completion rate.
+- Promotion rate by model/agent/harness tuple.
 - Generic Git sync success rate.
 - GitHub App sync success rate.
 - Average changed files per job.
@@ -51,6 +59,7 @@ the deploy boundary when evidence is weak.
 - Jobs requiring human approval.
 - Jobs retried after failure or cancellation.
 - Task-suite score by model/agent/harness tuple.
+- Replay corpus score by case.
 - User token budget reserved versus consumed.
 - ECS dispatch plans created versus rejected for missing configuration.
 
@@ -127,8 +136,9 @@ the deploy boundary when evidence is weak.
 
 15. Task-suite comparison
     - Run `python3 scripts/evaluate_task_suite.py`.
-    - Expected: the suite scores `1.0` across promote, needs-review, and reject
-      outcomes, and writes all terminal runs into `lab_runs`.
+    - Expected: the replay corpus scores `1.0` across promote, needs-review,
+      and reject outcomes, writes all terminal runs into `lab_runs`, and returns
+      leaderboard rows.
 
 16. Auth and quota controls
     - Set `AGENT_CLOUD_API_KEYS` and `AGENT_CLOUD_USER_TOKEN_QUOTA`, then submit
@@ -151,6 +161,32 @@ the deploy boundary when evidence is weak.
       harness contract, unknown IDs fail before dispatch, and custom IDs are
       recorded without claiming live execution.
 
+19. Harness adapter ABI and security profile
+    - Submit a default `local-template` job and inspect
+      `/jobs/<job_id>/worker-payload`.
+    - Expected: payload includes `harness_adapter_contract` and
+      `security_profile`; final evidence includes `harness_adapter_result` and
+      the selected security profile.
+
+20. Real adapter seam
+    - Enable a known external adapter such as `pi-coding-agent` with
+      `AGENT_CLOUD_ENABLE_PI_CODING_AGENT=1` and an executable
+      `AGENT_CLOUD_PI_CODING_AGENT_CMD`.
+    - Expected: evidence reports `pi-coding-agent-adapter` with status
+      `executed`; if the command is not enabled or executable, the service does
+      not claim live adapter execution.
+
+21. Replay artifact and promotion gate v2
+    - Run a successful local job and inspect `evidence.run_artifact`.
+    - Expected: `run-artifact.json`, transcript, and diff/fingerprint files
+      exist; `artifact_policy`, `transcript_policy`, and
+      `security_profile_policy` are true before a run can promote.
+
+22. Lab leaderboard
+    - Run several corpus cases and call `/lab/leaderboard`.
+    - Expected: rows are grouped by model, agent, and harness with promotion
+      counts, promotion rate, and average changed files/tests/tokens.
+
 ## Evidence To Show In A Demo
 
 The demo should make these proof points visible without much narration:
@@ -159,20 +195,25 @@ The demo should make these proof points visible without much narration:
 job_created
 harness_selected
 job_queued
-agent_dispatched
 budget_charged
+agent_dispatched
+lab_run_configured
+harness_adapter_selected
+harness_security_profile_selected
 repo_cloned
 repo_analyzed
 repo_memory_loaded
-lab_run_configured
 prompt_upgraded
 plan_created
 dependencies_requested
+harness_adapter_finished
 files_changed
 tests_finished
-policy_gate_result
 preview_created
 browser_proof_finished
+run_artifact_created
+policy_gate_result
+branch_pushed
 pr_created_or_updated
 deployment_finished
 job_succeeded

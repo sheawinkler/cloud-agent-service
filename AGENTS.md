@@ -44,6 +44,13 @@ Each repo update is also a minimal lab run: `ModelSpec` + `AgentSpec` +
 - `cloud_dispatch.py`: AWS ECS/Fargate dry-run dispatch request builder.
 - `harness_registry.py`: pre-indexed agent harness registry, top-20 slice, and
   custom harness contract support.
+- `harness_adapters.py`: harness adapter ABI, deterministic local adapter, and
+  opt-in Pi coding-agent CLI adapter.
+- `security_profiles.py`: per-harness command, secret, path, network, and
+  runtime security contracts.
+- `artifact_schema.py`: replayable run artifact writer for transcript, diff,
+  and artifact policy evidence.
+- `task_corpus.py`: shared replayable task corpus for API and evaluator.
 - `compose.yaml`: local Docker Compose wiring.
 - `scripts/install_allowed_modules.sh`: dependency allowlist installer.
 - `demo.sh`: one-command local demo.
@@ -109,6 +116,8 @@ curl -sS http://127.0.0.1:8000/jobs/<job_id>/budget
 curl -sS http://127.0.0.1:8000/jobs/<job_id>/events
 curl -sS http://127.0.0.1:8000/lab/runs
 curl -sS http://127.0.0.1:8000/lab/summary
+curl -sS http://127.0.0.1:8000/lab/leaderboard
+curl -sS http://127.0.0.1:8000/tasks/corpus
 curl -sS http://127.0.0.1:8000/models
 curl -sS http://127.0.0.1:8000/harnesses
 curl -sS http://127.0.0.1:8000/auth/status
@@ -129,25 +138,29 @@ A successful local run should emit these core events:
 1. `job_created`
 2. `harness_selected`
 3. `job_queued`
-4. `agent_dispatched`
-5. `budget_charged`
-6. `repo_cloned`
-7. `repo_analyzed`
-8. `repo_memory_loaded`
-9. `lab_run_configured`
-10. `prompt_upgraded`
-11. `plan_created`
-12. `dependencies_requested`
-13. `files_changed`
-14. `tests_finished`
-15. `policy_gate_result`
-16. `preview_created`
-17. `browser_proof_finished`
-18. `branch_pushed`
-19. `pr_created_or_updated`
-20. `deployment_finished`
-21. `job_succeeded`
-22. `promotion_decision_created`
+4. `budget_charged`
+5. `agent_dispatched`
+6. `lab_run_configured`
+7. `harness_adapter_selected`
+8. `harness_security_profile_selected`
+9. `repo_cloned`
+10. `repo_analyzed`
+11. `repo_memory_loaded`
+12. `prompt_upgraded`
+13. `plan_created`
+14. `dependencies_requested`
+15. `harness_adapter_finished`
+16. `files_changed`
+17. `tests_finished`
+18. `preview_created`
+19. `browser_proof_finished`
+20. `run_artifact_created`
+21. `policy_gate_result`
+22. `branch_pushed`
+23. `pr_created_or_updated`
+24. `deployment_finished`
+25. `job_succeeded`
+26. `promotion_decision_created`
 
 If a gate fails, the job must stop before mock PR sync or mock deployment.
 

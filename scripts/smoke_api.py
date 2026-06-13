@@ -123,6 +123,17 @@ def run_smoke(base_url: str, repo_path: str) -> dict[str, Any]:
         custom_harness_prefix=harnesses["custom_harness_prefix"],
     )
 
+    corpus = client.get("/tasks/corpus")
+    record(
+        results,
+        "task_corpus",
+        corpus["suite_id"] == "repo_edit_replay_corpus_v1"
+        and len(corpus["cases"]) == 10
+        and any(case["harness_id"] == "local-template" for case in corpus["cases"]),
+        suite_id=corpus["suite_id"],
+        cases=len(corpus["cases"]),
+    )
+
     job = client.post(
         "/jobs",
         {
@@ -146,7 +157,9 @@ def run_smoke(base_url: str, repo_path: str) -> dict[str, Any]:
         and payload["working_branch"] == f"agent/{job_id}"
         and payload["model_id"] == "local-deterministic"
         and payload["agent_id"] == "repo-editor-v1"
-        and payload["harness_id"] == "local-template",
+        and payload["harness_id"] == "local-template"
+        and payload["harness_adapter_contract"]["adapter_id"] == "local-template-adapter"
+        and payload["security_profile"]["profile_id"] == "local-template.locked-down.v1",
         token_budget=payload["token_budget"],
         max_changed_files=payload["max_changed_files"],
     )
@@ -157,7 +170,8 @@ def run_smoke(base_url: str, repo_path: str) -> dict[str, Any]:
         "run_manual",
         run["status"] == "succeeded"
         and run["deployment_status"] == "ready: manual approval required"
-        and run["tests_failed"] == [],
+        and run["tests_failed"] == []
+        and run.get("evidence", {}).get("run_artifact", {}).get("complete") is True,
         status=run["status"],
         deployment_status=run["deployment_status"],
     )
@@ -176,7 +190,9 @@ def run_smoke(base_url: str, repo_path: str) -> dict[str, Any]:
     record(
         results,
         "events",
-        "repo_analyzed" in event_types and "budget_charged" in event_types,
+        "repo_analyzed" in event_types
+        and "budget_charged" in event_types
+        and "run_artifact_created" in event_types,
         tail=event_types[-5:],
     )
 
@@ -220,6 +236,20 @@ def run_smoke(base_url: str, repo_path: str) -> dict[str, Any]:
         response=lab_summary,
     )
 
+    lab_leaderboard = client.get("/lab/leaderboard")
+    record(
+        results,
+        "lab_leaderboard",
+        any(
+            row["model_id"] == "local-deterministic"
+            and row["agent_id"] == "repo-editor-v1"
+            and row["harness_id"] == "local-template"
+            and row["total_runs"] >= 1
+            for row in lab_leaderboard["leaderboard"]
+        ),
+        rows=len(lab_leaderboard["leaderboard"]),
+    )
+
     lab_ui = client.get_text("/lab")
     record(
         results,
@@ -254,6 +284,7 @@ def run_smoke(base_url: str, repo_path: str) -> dict[str, Any]:
         one_click["status"] == "succeeded"
         and one_click["deployment_status"] == "ready: preview only"
         and evidence.get("browser_checks", {}).get("buy_button_present") is True
+        and evidence.get("run_artifact", {}).get("complete") is True
         and one_click.get("promotion_decision", {}).get("status") == "needs_review",
         status=one_click["status"],
         deployment_status=one_click["deployment_status"],
