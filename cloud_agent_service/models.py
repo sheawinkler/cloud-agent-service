@@ -49,6 +49,12 @@ class PromotionStatus(StrEnum):
     NEEDS_REVIEW = "needs_review"
 
 
+class RoutingPolicy(StrEnum):
+    FIXED = "fixed"
+    RECOMMEND_ONLY = "recommend_only"
+    AUTO_SELECT = "auto_select"
+
+
 class HarnessCategory(StrEnum):
     CODING_CLI = "coding_cli"
     CLOUD_CODING_AGENT = "cloud_coding_agent"
@@ -94,6 +100,89 @@ class TaskSuite:
 
 
 @dataclass(frozen=True)
+class AnalysisCase:
+    case_id: str
+    title: str
+    category: str
+    prompt: str
+    task_ids: list[str]
+    model_ids: list[str]
+    agent_ids: list[str]
+    harness_ids: list[str]
+    success_criteria: list[str]
+    tags: list[str] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class ExperimentSpec:
+    experiment_id: str
+    case_id: str
+    name: str
+    model_ids: list[str]
+    agent_ids: list[str]
+    harness_ids: list[str]
+    task_ids: list[str]
+    notes: str = ""
+
+
+@dataclass(frozen=True)
+class RunAnalysis:
+    job_id: str
+    case_id: str
+    model_id: str
+    agent_id: str
+    harness_id: str
+    job_status: str
+    promotion_status: str
+    failure_category: str
+    evaluator_notes: str
+    changed_files_count: int
+    tests_failed_count: int
+    token_budget: int
+    tokens_used: int
+    run_artifact_complete: bool
+
+
+@dataclass(frozen=True)
+class ExperimentRun:
+    experiment_id: str
+    job_ids: list[str]
+    analyses: list[RunAnalysis]
+
+
+@dataclass(frozen=True)
+class ExperimentReport:
+    experiment_id: str
+    case_id: str
+    total_runs: int
+    by_promotion_status: dict[str, int]
+    failure_categories: dict[str, int]
+    best_candidates: list[dict[str, Any]]
+    runs: list[RunAnalysis]
+
+
+@dataclass(frozen=True)
+class DatasetExport:
+    export_id: str
+    artifact_path: str
+    split_paths: dict[str, str]
+    counts: dict[str, int]
+    source_job_ids: list[str]
+
+
+@dataclass(frozen=True)
+class RoutingDecision:
+    routing_policy: RoutingPolicy
+    selected_model_id: str
+    selected_agent_id: str
+    selected_harness_id: str
+    confidence: float
+    reason: str
+    nearest_analysis_cases: list[str]
+    fallback: bool
+
+
+@dataclass(frozen=True)
 class JobRequest:
     prompt: str
     repo_path: str = ""
@@ -107,6 +196,7 @@ class JobRequest:
     user_id: str = "local-user"
     base_branch: str = "main"
     deploy_policy: DeploymentPolicy = DeploymentPolicy.MANUAL
+    routing_policy: RoutingPolicy = RoutingPolicy.FIXED
     token_budget: int = 8_000
     max_prompt_chars: int = 8_000
     max_runtime_seconds: int = 600
@@ -182,6 +272,8 @@ class WorkerJobPayload:
     max_runtime_seconds: int
     max_changed_files: int
     deployment_policy: DeploymentPolicy
+    routing_policy: RoutingPolicy
+    routing_decision: dict[str, Any]
     status_callback_url: str
     output_schema: dict[str, Any]
 

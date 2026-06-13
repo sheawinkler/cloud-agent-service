@@ -134,6 +134,45 @@ def run_smoke(base_url: str, repo_path: str) -> dict[str, Any]:
         cases=len(corpus["cases"]),
     )
 
+    analysis_cases = client.get("/analysis/cases")
+    case_ids = {case["case_id"] for case in analysis_cases["cases"]}
+    record(
+        results,
+        "analysis_cases",
+        {
+            "model_bakeoff_repo_edit",
+            "prompt_ablation_context_quality",
+            "adversarial_safety_boundary",
+            "failure_forensics_repair_loop",
+        }.issubset(case_ids),
+        cases=len(analysis_cases["cases"]),
+    )
+
+    analysis_case = client.get("/analysis/cases/model_bakeoff_repo_edit")
+    record(
+        results,
+        "analysis_case_detail",
+        analysis_case["category"] == "model_bakeoff"
+        and "local-template" in analysis_case["harness_ids"],
+        title=analysis_case["title"],
+    )
+
+    route = client.post(
+        "/lab/router/recommend",
+        {
+            "prompt": "For my shopping website, create a buy button.",
+            "routing_policy": "recommend_only",
+        },
+    )
+    record(
+        results,
+        "router_recommend_cold",
+        route["selected_model_id"] == "local-deterministic"
+        and "model_bakeoff_repo_edit" in route["nearest_analysis_cases"],
+        confidence=route["confidence"],
+        fallback=route["fallback"],
+    )
+
     job = client.post(
         "/jobs",
         {
@@ -159,7 +198,9 @@ def run_smoke(base_url: str, repo_path: str) -> dict[str, Any]:
         and payload["agent_id"] == "repo-editor-v1"
         and payload["harness_id"] == "local-template"
         and payload["harness_adapter_contract"]["adapter_id"] == "local-template-adapter"
-        and payload["security_profile"]["profile_id"] == "local-template.locked-down.v1",
+        and payload["security_profile"]["profile_id"] == "local-template.locked-down.v1"
+        and payload["routing_policy"] == "fixed"
+        and payload["routing_decision"]["selected_harness_id"] == "local-template",
         token_budget=payload["token_budget"],
         max_changed_files=payload["max_changed_files"],
     )
@@ -256,6 +297,58 @@ def run_smoke(base_url: str, repo_path: str) -> dict[str, Any]:
         "lab_ui",
         "<title>Agent Lab</title>" in lab_ui and "Recent Runs" in lab_ui,
         length=len(lab_ui),
+    )
+
+    experiment = client.post(
+        "/analysis/experiments",
+        {
+            "case_id": "model_bakeoff_repo_edit",
+            "name": "smoke model bakeoff",
+        },
+    )
+    experiment_run = client.post(
+        f"/analysis/experiments/{experiment['experiment_id']}/run",
+        {
+            "repo_path": repo_path,
+            "deploy_policy": "preview_only",
+        },
+    )
+    record(
+        results,
+        "analysis_experiment_run",
+        experiment_run["experiment_id"] == experiment["experiment_id"]
+        and len(experiment_run["job_ids"]) >= 1
+        and experiment_run["analyses"][0]["run_artifact_complete"] is True,
+        experiment_id=experiment["experiment_id"],
+        jobs=len(experiment_run["job_ids"]),
+    )
+
+    report = client.get(f"/analysis/experiments/{experiment['experiment_id']}/report")
+    record(
+        results,
+        "analysis_experiment_report",
+        report["total_runs"] >= 1
+        and "needs_review" in report["by_promotion_status"],
+        total_runs=report["total_runs"],
+        statuses=report["by_promotion_status"],
+    )
+
+    dataset = client.post(
+        "/datasets/exports",
+        {
+            "export_id": "smoke_export",
+            "limit": 50,
+        },
+    )
+    dataset_get = client.get(f"/datasets/exports/{dataset['export_id']}")
+    record(
+        results,
+        "dataset_export",
+        sum(dataset["counts"].values()) >= 1
+        and dataset_get["export_id"] == dataset["export_id"]
+        and {"train", "eval", "holdout"}.issubset(set(dataset["split_paths"])),
+        export_id=dataset["export_id"],
+        counts=dataset["counts"],
     )
 
     quota = client.get("/users/local-user/quota")

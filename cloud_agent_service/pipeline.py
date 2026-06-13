@@ -10,20 +10,35 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from pathlib import Path
 from typing import Any
 
+from cloud_agent_service.analysis_lab import (
+    analysis_case_to_row,
+    analyze_job_result,
+    build_experiment_report,
+    default_analysis_cases,
+    experiment_run_from_analyses,
+    experiment_spec_to_row,
+    stable_experiment_id,
+)
 from cloud_agent_service.artifact_schema import RunArtifact, RunArtifactWriter
+from cloud_agent_service.dataset_export import SlmDatasetExporter
 from cloud_agent_service.harness_adapters import (
     HarnessAdapterRegistry,
     HarnessExecutionRequest,
 )
 from cloud_agent_service.harness_registry import HarnessRegistry
+from cloud_agent_service.lab_router import LabRouter
 from cloud_agent_service.models import (
     AgentPlan,
     AgentSpec,
+    DatasetExport,
     DeploymentPolicy,
+    ExperimentReport,
+    ExperimentRun,
+    ExperimentSpec,
     GitHubIntegrationStatus,
     HarnessSpec,
     JobRequest,
@@ -37,6 +52,9 @@ from cloud_agent_service.models import (
     RepoProfile,
     RepoProvider,
     RiskLevel,
+    RoutingDecision,
+    RoutingPolicy,
+    RunAnalysis,
     WorkerJobPayload,
 )
 from cloud_agent_service.security_profiles import HarnessSecurityRegistry
@@ -1109,6 +1127,8 @@ class AgentCloudFlow:
         self.harness_adapters = HarnessAdapterRegistry()
         self.security_profiles = HarnessSecurityRegistry()
         self.run_artifacts = RunArtifactWriter()
+        self.router = LabRouter()
+        self.dataset_exporter = SlmDatasetExporter(store, self.artifacts_dir)
         self.validator = RequestValidator()
         self.upgrader = PromptUpgrader()
         self.planner = Planner()
@@ -1128,8 +1148,17 @@ class AgentCloudFlow:
         self.github_integration = GitHubIntegration(self.github_client)
         self.preview_publisher = PreviewPublisher()
         self.deployer = LocalDeployer()
+        self._seed_analysis_cases()
 
     def create_job(self, request: JobRequest) -> str:
+        routing_decision = self._routing_decision(request)
+        if request.routing_policy == RoutingPolicy.AUTO_SELECT:
+            request = replace(
+                request,
+                model_id=routing_decision.selected_model_id,
+                agent_id=routing_decision.selected_agent_id,
+                harness_id=routing_decision.selected_harness_id,
+            )
         self.validator.validate(request)
         self.lab_registry.validate(request)
         harness_spec = self._harness_spec(request.harness_id)
@@ -1147,6 +1176,8 @@ class AgentCloudFlow:
                 "model_id": request.model_id,
                 "agent_id": request.agent_id,
                 "harness_id": harness_spec.harness_id,
+                "routing_policy": request.routing_policy.value,
+                "routing_decision_json": asdict(routing_decision),
                 "working_branch": self._working_branch(job_id, request),
                 "base_branch": request.base_branch,
                 "deploy_policy": request.deploy_policy.value,
@@ -1157,6 +1188,7 @@ class AgentCloudFlow:
             }
         )
         self.store.add_event(job_id, "job_created", {"user_id": request.user_id})
+        self.store.add_event(job_id, "routing_decision_created", asdict(routing_decision))
         self.store.add_event(
             job_id,
             "harness_selected",
@@ -1215,6 +1247,8 @@ class AgentCloudFlow:
             max_runtime_seconds=plan.max_runtime_seconds,
             max_changed_files=request.max_changed_files,
             deployment_policy=request.deploy_policy,
+            routing_policy=request.routing_policy,
+            routing_decision=job["routing_decision_json"],
             status_callback_url=f"{status_callback_url.rstrip('/')}/{job_id}",
             output_schema=plan.output_schema,
         )
@@ -1315,6 +1349,115 @@ class AgentCloudFlow:
     def harness_status(self) -> dict[str, Any]:
         return self.harness_registry.response()
 
+    def list_analysis_cases(self) -> list[dict[str, Any]]:
+        return self.store.list_analysis_cases()
+
+    def get_analysis_case(self, case_id: str) -> dict[str, Any] | None:
+        return self.store.get_analysis_case(case_id)
+
+    def create_analysis_experiment(
+        self,
+        *,
+        case_id: str,
+        name: str | None = None,
+        model_ids: list[str] | None = None,
+        agent_ids: list[str] | None = None,
+        harness_ids: list[str] | None = None,
+        task_ids: list[str] | None = None,
+        notes: str = "",
+    ) -> ExperimentSpec:
+        case = self.store.get_analysis_case(case_id)
+        if not case:
+            raise RequestValidationError(f"unknown analysis case: {case_id}")
+        name = name or case["title"]
+        spec = ExperimentSpec(
+            experiment_id=stable_experiment_id(case_id, name),
+            case_id=case_id,
+            name=name,
+            model_ids=model_ids or ["local-deterministic"],
+            agent_ids=agent_ids or ["repo-editor-v1"],
+            harness_ids=harness_ids or ["local-template"],
+            task_ids=task_ids or case["task_ids"],
+            notes=notes,
+        )
+        self.store.create_analysis_experiment(experiment_spec_to_row(spec))
+        return spec
+
+    def run_analysis_experiment(
+        self,
+        experiment_id: str,
+        repo_path: str,
+        deploy_policy: DeploymentPolicy = DeploymentPolicy.PREVIEW_ONLY,
+    ) -> ExperimentRun:
+        experiment = self.store.get_analysis_experiment(experiment_id)
+        if not experiment:
+            raise RequestValidationError(f"unknown analysis experiment: {experiment_id}")
+        case = self.store.get_analysis_case(experiment["case_id"])
+        if not case:
+            raise RequestValidationError(f"unknown analysis case: {experiment['case_id']}")
+        spec = ExperimentSpec(**experiment["spec_json"])
+        analyses: list[RunAnalysis] = []
+        for model_id in spec.model_ids:
+            for agent_id in spec.agent_ids:
+                for harness_id in spec.harness_ids:
+                    job_id = self.create_job(
+                        JobRequest(
+                            prompt=case["prompt"],
+                            repo_path=repo_path,
+                            model_id=model_id,
+                            agent_id=agent_id,
+                            harness_id=harness_id,
+                            deploy_policy=deploy_policy,
+                        )
+                    )
+                    result = self.run_job(job_id)
+                    job = self.store.get_job(job_id)
+                    if not job:
+                        continue
+                    analysis = analyze_job_result(
+                        case_id=case["case_id"],
+                        job=job,
+                        result=result,
+                        tokens_used=self.store.budget_tokens_used(job_id),
+                    )
+                    self.store.add_analysis_experiment_run(
+                        experiment_id=experiment_id,
+                        case_id=case["case_id"],
+                        job_id=job_id,
+                        analysis=asdict(analysis),
+                    )
+                    analyses.append(analysis)
+        return experiment_run_from_analyses(experiment_id, analyses)
+
+    def experiment_report(self, experiment_id: str) -> ExperimentReport:
+        experiment = self.store.get_analysis_experiment(experiment_id)
+        if not experiment:
+            raise RequestValidationError(f"unknown analysis experiment: {experiment_id}")
+        spec = ExperimentSpec(**experiment["spec_json"])
+        analyses = [
+            RunAnalysis(**row["analysis_json"])
+            for row in self.store.list_analysis_experiment_runs(experiment_id)
+        ]
+        return build_experiment_report(spec, analyses)
+
+    def export_slm_dataset(
+        self,
+        export_id: str | None = None,
+        limit: int = 200,
+        promotion_status: PromotionStatus | None = None,
+    ) -> DatasetExport:
+        return self.dataset_exporter.export(
+            export_id=export_id,
+            limit=limit,
+            promotion_status=promotion_status.value if promotion_status else None,
+        )
+
+    def get_dataset_export(self, export_id: str) -> dict[str, Any] | None:
+        return self.store.get_dataset_export(export_id)
+
+    def recommend_route(self, request: JobRequest) -> RoutingDecision:
+        return self._routing_decision(request)
+
     def run_job(self, job_id: str) -> JobResult:
         job = self.store.get_job(job_id)
         if not job:
@@ -1335,6 +1478,7 @@ class AgentCloudFlow:
             request.max_runtime_seconds,
         )
         adapter_contract = self.harness_adapters.contract_for(harness_spec)
+        routing_decision = job["routing_decision_json"]
         agent_result = self._empty_agent_result()
         evidence: dict[str, Any] = {}
 
@@ -1516,6 +1660,8 @@ class AgentCloudFlow:
                 harness_spec,
                 security_profile,
                 adapter_result,
+                request.routing_policy,
+                routing_decision,
             )
             run_artifact = self.run_artifacts.write(
                 artifacts_dir=self.artifacts_dir,
@@ -1656,6 +1802,7 @@ class AgentCloudFlow:
             max_prompt_chars=job["max_prompt_chars"],
             max_runtime_seconds=job["max_runtime_seconds"],
             max_changed_files=job["max_changed_files"],
+            routing_policy=RoutingPolicy(job["routing_policy"]),
         )
 
     @staticmethod
@@ -1690,6 +1837,8 @@ class AgentCloudFlow:
         harness_spec: HarnessSpec,
         security_profile: Any,
         adapter_result: Any,
+        routing_policy: RoutingPolicy,
+        routing_decision: dict[str, Any],
     ) -> dict[str, Any]:
         return {
             "job_id": job_id,
@@ -1699,6 +1848,8 @@ class AgentCloudFlow:
             "model_spec": asdict(model_spec),
             "agent_spec": asdict(agent_spec),
             "harness_spec": asdict(harness_spec),
+            "routing_policy": routing_policy.value,
+            "routing_decision": routing_decision,
             "security_profile": asdict(security_profile),
             "harness_adapter_result": asdict(adapter_result),
             "preview_url": preview.preview_url,
@@ -1959,6 +2110,13 @@ class AgentCloudFlow:
                 "updated_at": job["updated_at"],
             }
         )
+
+    def _routing_decision(self, request: JobRequest) -> RoutingDecision:
+        return self.router.recommend(request, self.store.lab_leaderboard())
+
+    def _seed_analysis_cases(self) -> None:
+        for case in default_analysis_cases():
+            self.store.upsert_analysis_case(analysis_case_to_row(case))
 
     def _result(
         self,

@@ -1,3 +1,4 @@
+import json
 import sqlite3
 import subprocess
 import tempfile
@@ -6,8 +7,15 @@ from pathlib import Path
 from unittest.mock import patch
 
 from cloud_agent_service.cloud_dispatch import EcsDispatchPlanner
+from cloud_agent_service.dataset_export import SlmDatasetExporter
 from cloud_agent_service.harness_registry import HarnessRegistry
-from cloud_agent_service.models import DeploymentPolicy, JobRequest, JobStatus, RepoProvider
+from cloud_agent_service.models import (
+    DeploymentPolicy,
+    JobRequest,
+    JobStatus,
+    RepoProvider,
+    RoutingPolicy,
+)
 from cloud_agent_service.pipeline import (
     AgentCloudFlow,
     DependencyInstaller,
@@ -233,6 +241,8 @@ class CloudAgentServiceFlowTests(unittest.TestCase):
             self.assertEqual(1234, payload.token_budget)
             self.assertEqual(77, payload.max_runtime_seconds)
             self.assertEqual(1, payload.max_changed_files)
+            self.assertEqual(RoutingPolicy.FIXED, payload.routing_policy)
+            self.assertEqual("fixed", payload.routing_decision["routing_policy"])
             self.assertEqual("local-deterministic", payload.model_id)
             self.assertEqual("repo-editor-v1", payload.agent_id)
             self.assertEqual("local-template", payload.harness_id)
@@ -251,6 +261,132 @@ class CloudAgentServiceFlowTests(unittest.TestCase):
                 payload.security_profile["profile_id"],
             )
             self.assertIn("policy_gate_results", payload.output_schema)
+
+    def test_analysis_cases_experiment_report_and_dataset_export(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = self._build_repo(root)
+            flow = self._build_flow(root)
+
+            cases = flow.list_analysis_cases()
+            self.assertGreaterEqual(len(cases), 4)
+            self.assertIsNotNone(flow.get_analysis_case("model_bakeoff_repo_edit"))
+
+            spec = flow.create_analysis_experiment(
+                case_id="model_bakeoff_repo_edit",
+                name="local bakeoff smoke",
+            )
+            run = flow.run_analysis_experiment(
+                spec.experiment_id,
+                repo_path=str(repo),
+                deploy_policy=DeploymentPolicy.PREVIEW_ONLY,
+            )
+            report = flow.experiment_report(spec.experiment_id)
+
+            self.assertEqual(spec.experiment_id, run.experiment_id)
+            self.assertEqual(1, len(run.job_ids))
+            self.assertEqual(1, report.total_runs)
+            self.assertEqual(1, report.by_promotion_status["needs_review"])
+            self.assertEqual("human_review_required", run.analyses[0].failure_category)
+            self.assertTrue(run.analyses[0].run_artifact_complete)
+
+            export = flow.export_slm_dataset(export_id="test_export", limit=50)
+            self.assertEqual("test_export", export.export_id)
+            self.assertEqual(1, sum(export.counts.values()))
+            self.assertTrue(Path(export.artifact_path).exists())
+            exported = flow.get_dataset_export("test_export")
+            self.assertEqual(export.counts, exported["counts"])
+            records = []
+            for split_path in export.split_paths.values():
+                path = Path(split_path)
+                self.assertTrue(path.exists())
+                records.extend(
+                    json.loads(line)
+                    for line in path.read_text(encoding="utf-8").splitlines()
+                    if line
+                )
+            self.assertEqual(1, len(records))
+            self.assertEqual("slm-dataset.v1", records[0]["schema_version"])
+            self.assertNotIn(str(root), json.dumps(records[0], sort_keys=True))
+
+    def test_unknown_analysis_case_and_empty_dataset_export(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            flow = self._build_flow(root)
+
+            self.assertIsNone(flow.get_analysis_case("missing_case"))
+            with self.assertRaises(RequestValidationError):
+                flow.create_analysis_experiment(case_id="missing_case")
+
+            export = flow.export_slm_dataset(export_id="empty_export", limit=50)
+            self.assertEqual({"train": 0, "eval": 0, "holdout": 0}, export.counts)
+            self.assertEqual([], export.source_job_ids)
+            for split_path in export.split_paths.values():
+                path = Path(split_path)
+                self.assertTrue(path.exists())
+                self.assertEqual("", path.read_text(encoding="utf-8"))
+
+    def test_dataset_export_redacts_paths_and_secrets(self):
+        redacted = SlmDatasetExporter._redact_text(
+            "/Users/sheawinkler/private sk-testsecret OPENAI_API_KEY=abc123"
+        )
+
+        self.assertIn("<redacted_path>", redacted)
+        self.assertIn("<redacted_secret>", redacted)
+        self.assertNotIn("/Users/sheawinkler/private", redacted)
+        self.assertNotIn("OPENAI_API_KEY=abc123", redacted)
+
+    def test_router_recommend_and_auto_select_policy(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = self._build_repo(root)
+            flow = self._build_flow(root)
+
+            cold = flow.recommend_route(
+                JobRequest(
+                    prompt="For my shopping website, create a buy button.",
+                    repo_path=str(repo),
+                    routing_policy=RoutingPolicy.RECOMMEND_ONLY,
+                )
+            )
+            self.assertTrue(cold.fallback)
+            self.assertIn("model_bakeoff_repo_edit", cold.nearest_analysis_cases)
+
+            flow.run_job(
+                flow.create_job(
+                    JobRequest(
+                        prompt="For my shopping website, create a buy button.",
+                        repo_path=str(repo),
+                        deploy_policy=DeploymentPolicy.LOCAL,
+                    )
+                )
+            )
+
+            warm = flow.recommend_route(
+                JobRequest(
+                    prompt="For my shopping website, create a buy button.",
+                    repo_path=str(repo),
+                    routing_policy=RoutingPolicy.RECOMMEND_ONLY,
+                )
+            )
+            self.assertFalse(warm.fallback)
+            self.assertEqual("local-deterministic", warm.selected_model_id)
+            self.assertEqual("repo-editor-v1", warm.selected_agent_id)
+            self.assertEqual("local-template", warm.selected_harness_id)
+
+            auto_job_id = flow.create_job(
+                JobRequest(
+                    prompt="For my shopping website, create a buy button.",
+                    repo_path=str(repo),
+                    routing_policy=RoutingPolicy.AUTO_SELECT,
+                )
+            )
+            auto_job = flow.store.get_job(auto_job_id)
+            self.assertEqual("auto_select", auto_job["routing_policy"])
+            self.assertEqual(
+                "local-template",
+                auto_job["routing_decision_json"]["selected_harness_id"],
+            )
 
     def test_unknown_model_or_agent_is_rejected_before_dispatch(self):
         with tempfile.TemporaryDirectory() as tmp:

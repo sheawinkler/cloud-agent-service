@@ -51,6 +51,10 @@ Each repo update is also a minimal lab run: `ModelSpec` + `AgentSpec` +
 - `artifact_schema.py`: replayable run artifact writer for transcript, diff,
   and artifact policy evidence.
 - `task_corpus.py`: shared replayable task corpus for API and evaluator.
+- `analysis_lab.py`: seeded analysis cases, experiment analysis, and report
+  aggregation.
+- `dataset_export.py`: redacted SLM JSONL export from replay artifacts.
+- `lab_router.py`: leaderboard-backed model/agent/harness routing decisions.
 - `compose.yaml`: local Docker Compose wiring.
 - `scripts/install_allowed_modules.sh`: dependency allowlist installer.
 - `demo.sh`: one-command local demo.
@@ -118,6 +122,8 @@ curl -sS http://127.0.0.1:8000/lab/runs
 curl -sS http://127.0.0.1:8000/lab/summary
 curl -sS http://127.0.0.1:8000/lab/leaderboard
 curl -sS http://127.0.0.1:8000/tasks/corpus
+curl -sS http://127.0.0.1:8000/analysis/cases
+curl -sS http://127.0.0.1:8000/datasets/exports/<export_id>
 curl -sS http://127.0.0.1:8000/models
 curl -sS http://127.0.0.1:8000/harnesses
 curl -sS http://127.0.0.1:8000/auth/status
@@ -136,31 +142,32 @@ docker --context orbstack compose -f compose.yaml down
 A successful local run should emit these core events:
 
 1. `job_created`
-2. `harness_selected`
-3. `job_queued`
-4. `budget_charged`
-5. `agent_dispatched`
-6. `lab_run_configured`
-7. `harness_adapter_selected`
-8. `harness_security_profile_selected`
-9. `repo_cloned`
-10. `repo_analyzed`
-11. `repo_memory_loaded`
-12. `prompt_upgraded`
-13. `plan_created`
-14. `dependencies_requested`
-15. `harness_adapter_finished`
-16. `files_changed`
-17. `tests_finished`
-18. `preview_created`
-19. `browser_proof_finished`
-20. `run_artifact_created`
-21. `policy_gate_result`
-22. `branch_pushed`
-23. `pr_created_or_updated`
-24. `deployment_finished`
-25. `job_succeeded`
-26. `promotion_decision_created`
+2. `routing_decision_created`
+3. `harness_selected`
+4. `job_queued`
+5. `budget_charged`
+6. `agent_dispatched`
+7. `lab_run_configured`
+8. `harness_adapter_selected`
+9. `harness_security_profile_selected`
+10. `repo_cloned`
+11. `repo_analyzed`
+12. `repo_memory_loaded`
+13. `prompt_upgraded`
+14. `plan_created`
+15. `dependencies_requested`
+16. `harness_adapter_finished`
+17. `files_changed`
+18. `tests_finished`
+19. `preview_created`
+20. `browser_proof_finished`
+21. `run_artifact_created`
+22. `policy_gate_result`
+23. `branch_pushed`
+24. `pr_created_or_updated`
+25. `deployment_finished`
+26. `job_succeeded`
+27. `promotion_decision_created`
 
 If a gate fails, the job must stop before mock PR sync or mock deployment.
 

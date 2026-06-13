@@ -16,6 +16,8 @@ pre-indexes current agent harnesses, exposes a top_20 slice, and accepts
 Harness execution goes through an adapter ABI, attaches a per-harness security
 profile, writes replayable run artifacts, and feeds a model/agent/harness
 leaderboard.
+Analysis cases, experiment reports, SLM dataset export, and router decisions
+turn the control loop into a small Language Model Lab surface.
 
 Important boundary:
 The current implementation does not call AWS and does not perform a real
@@ -51,6 +53,9 @@ Primary files:
   boundaries.
 - artifact_schema.py: run-artifact.json, transcript, diff, and artifact gates.
 - task_corpus.py: shared replayable task corpus.
+- analysis_lab.py: seeded analysis cases and experiment reports.
+- dataset_export.py: redacted SLM JSONL export from replay artifacts.
+- lab_router.py: leaderboard-backed routing decisions.
 - compose.yaml: Docker Compose for local API/worker builds.
 - EVALUATION.md: product and operational evaluation criteria.
 - examples/agent_contract.json: worker payload and final result example.
@@ -78,6 +83,8 @@ Monitor commands:
 - curl -sS http://127.0.0.1:8000/lab/summary
 - curl -sS http://127.0.0.1:8000/lab/leaderboard
 - curl -sS http://127.0.0.1:8000/tasks/corpus
+- curl -sS http://127.0.0.1:8000/analysis/cases
+- curl -sS http://127.0.0.1:8000/datasets/exports/<export_id>
 - curl -sS http://127.0.0.1:8000/models
 - curl -sS http://127.0.0.1:8000/harnesses
 - curl -sS http://127.0.0.1:8000/integrations/cloud/status
@@ -96,7 +103,8 @@ Expected successful flow:
 11. Apply policy gates.
 12. Record preview/browser/run-artifact evidence.
 13. Sync review output and return final status plus promotion decision.
-14. Index the terminal run for lab summary and task-suite comparison.
+14. Index the terminal run for lab summary, task-suite comparison, analysis
+    reports, dataset export, and router recommendations.
 
 Do not:
 - Treat mock PR URLs as real GitHub PRs.
@@ -114,6 +122,9 @@ Useful API reads:
 - GET /lab/summary
 - GET /lab/leaderboard
 - GET /tasks/corpus
+- GET /analysis/cases
+- GET /datasets/exports/<export_id>
+- POST /lab/router/recommend
 - GET /lab
 - GET /models
 - GET /harnesses

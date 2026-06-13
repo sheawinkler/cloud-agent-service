@@ -13,6 +13,8 @@ API-key/usage controls, a ranked harness index with a top-20 slice, and an ECS
 dry-run dispatch contract. The next productized layer adds a harness adapter
 ABI, per-harness security profiles, replayable run artifacts, a task corpus,
 and a model/agent/harness leaderboard.
+The current layer adds analysis cases, experiment reports, redacted SLM dataset
+exports, and a leaderboard-backed router for Language Model Lab comparisons.
 
 Local repo jobs still use mock PR and deployment artifacts. Generic Git jobs
 clone from `git_url` and push an agent branch back to `origin`. GitHub repo jobs
@@ -82,6 +84,10 @@ Monitoring:
 - `artifact_schema.py`: replayable run artifact, transcript, diff, and artifact
   policy generation.
 - `task_corpus.py`: replayable task corpus used by API and evaluator.
+- `analysis_lab.py`: seeded analysis cases, experiment analysis, and report
+  aggregation.
+- `dataset_export.py`: redacted SLM JSONL export from replay artifacts.
+- `lab_router.py`: leaderboard-backed model/agent/harness routing decisions.
 - `Dockerfile.api`: API container.
 - `Dockerfile.agent`: worker container.
 - `compose.yaml`: local API/worker build configuration.
@@ -115,6 +121,9 @@ Monitoring:
     dispatch contracts.
 17. Record adapter/security/run-artifact evidence before a run can be promoted.
 18. Compare model/agent/harness tuples with a leaderboard and replayable corpus.
+19. Run named analysis cases and experiment reports.
+20. Export replay evidence into redacted SLM train/eval/holdout JSONL splits.
+21. Recommend or auto-select lab tuples through an evidence-backed router.
 
 ## Model And Agent Lab Layer
 
@@ -181,6 +190,24 @@ profile to be attached before returning `promote`.
 `GET /tasks/corpus` exposes the default replayable task corpus used by
 `scripts/evaluate_task_suite.py`.
 
+## Analysis Lab And SLM Datasets
+
+`GET /analysis/cases` exposes seeded analysis cases for model bakeoff, prompt
+ablation, adversarial safety, and failure forensics. Experiments run a selected
+case against a repo and persist linked job analyses, failure categories, token
+usage, promotion status, and artifact completeness.
+
+SLM dataset exports convert completed replay artifacts into redacted JSONL
+splits under `artifacts/datasets/<export_id>/`. The export records prompt and
+lab metadata, tests, gates, promotion labels, failure category, transcript
+excerpt, and diff fingerprint without raw private paths or secret-looking
+values.
+
+The router supports `fixed`, `recommend_only`, and `auto_select`. `fixed` is
+the default and preserves existing behavior. `recommend_only` returns a decision
+without changing the job. `auto_select` applies the best leaderboard-backed
+model/agent/harness tuple before validation.
+
 ## Simple Demo
 
 Run a complete local job without Docker or external services:
@@ -213,6 +240,7 @@ python3 -m compileall cloud_agent_service scripts tests
 ./demo.sh
 python3 scripts/evaluate_mvp.py
 python3 scripts/evaluate_task_suite.py
+python3 scripts/export_slm_dataset.py --limit 50
 python3 -m unittest tests.test_cloud_agent_service_flow
 python3 -m unittest discover -s tests
 ```
@@ -273,6 +301,11 @@ curl -sS 'http://127.0.0.1:8000/lab/runs?model_id=local-deterministic&promotion_
 curl -sS http://127.0.0.1:8000/lab/summary
 curl -sS http://127.0.0.1:8000/lab/leaderboard
 curl -sS http://127.0.0.1:8000/tasks/corpus
+curl -sS http://127.0.0.1:8000/analysis/cases
+curl -sS http://127.0.0.1:8000/datasets/exports/<export_id>
+curl -X POST http://127.0.0.1:8000/lab/router/recommend \
+  -H 'content-type: application/json' \
+  -d '{"prompt":"For my shopping website, create a buy button."}'
 open http://127.0.0.1:8000/lab
 curl -sS http://127.0.0.1:8000/models
 curl -sS http://127.0.0.1:8000/harnesses

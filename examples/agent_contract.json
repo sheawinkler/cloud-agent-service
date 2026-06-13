@@ -128,6 +128,19 @@
     "max_runtime_seconds": 600,
     "max_changed_files": 12,
     "deployment_policy": "manual",
+    "routing_policy": "fixed",
+    "routing_decision": {
+      "routing_policy": "fixed",
+      "selected_model_id": "local-deterministic",
+      "selected_agent_id": "repo-editor-v1",
+      "selected_harness_id": "local-template",
+      "confidence": 1.0,
+      "reason": "Fixed routing policy preserves the caller-selected lab tuple.",
+      "nearest_analysis_cases": [
+        "model_bakeoff_repo_edit"
+      ],
+      "fallback": false
+    },
     "status_callback_url": "local://jobs/demo-job-001",
     "output_schema": {
       "changed_files": "list[str]",
@@ -238,6 +251,19 @@
           "Default harness for local MVP proof.",
           "Use top-20 or custom harness IDs to hand workers a different runtime contract."
         ]
+      },
+      "routing_policy": "fixed",
+      "routing_decision": {
+        "routing_policy": "fixed",
+        "selected_model_id": "local-deterministic",
+        "selected_agent_id": "repo-editor-v1",
+        "selected_harness_id": "local-template",
+        "confidence": 1.0,
+        "reason": "Fixed routing policy preserves the caller-selected lab tuple.",
+        "nearest_analysis_cases": [
+          "model_bakeoff_repo_edit"
+        ],
+        "fallback": false
       },
       "security_profile": {
         "profile_id": "local-template.locked-down.v1",

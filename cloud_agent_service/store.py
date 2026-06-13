@@ -43,6 +43,8 @@ class JobStore:
                         model_id TEXT NOT NULL DEFAULT 'local-deterministic',
                         agent_id TEXT NOT NULL DEFAULT 'repo-editor-v1',
                         harness_id TEXT NOT NULL DEFAULT 'local-template',
+                        routing_policy TEXT NOT NULL DEFAULT 'fixed',
+                        routing_decision_json TEXT NOT NULL DEFAULT '{}',
                         working_branch TEXT NOT NULL DEFAULT '',
                         workspace_path TEXT NOT NULL DEFAULT '',
                         base_branch TEXT NOT NULL,
@@ -119,6 +121,64 @@ class JobStore:
                     )
                     """
                 )
+                conn.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS analysis_cases (
+                        case_id TEXT PRIMARY KEY,
+                        title TEXT NOT NULL,
+                        category TEXT NOT NULL,
+                        prompt TEXT NOT NULL,
+                        task_ids_json TEXT NOT NULL,
+                        model_ids_json TEXT NOT NULL,
+                        agent_ids_json TEXT NOT NULL,
+                        harness_ids_json TEXT NOT NULL,
+                        success_criteria_json TEXT NOT NULL,
+                        tags_json TEXT NOT NULL,
+                        created_at TEXT NOT NULL,
+                        updated_at TEXT NOT NULL
+                    )
+                    """
+                )
+                conn.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS analysis_experiments (
+                        experiment_id TEXT PRIMARY KEY,
+                        case_id TEXT NOT NULL,
+                        name TEXT NOT NULL,
+                        spec_json TEXT NOT NULL,
+                        created_at TEXT NOT NULL,
+                        updated_at TEXT NOT NULL,
+                        FOREIGN KEY(case_id) REFERENCES analysis_cases(case_id)
+                    )
+                    """
+                )
+                conn.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS analysis_experiment_runs (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        experiment_id TEXT NOT NULL,
+                        case_id TEXT NOT NULL,
+                        job_id TEXT NOT NULL,
+                        analysis_json TEXT NOT NULL,
+                        created_at TEXT NOT NULL,
+                        FOREIGN KEY(experiment_id) REFERENCES analysis_experiments(experiment_id),
+                        FOREIGN KEY(job_id) REFERENCES jobs(job_id)
+                    )
+                    """
+                )
+                conn.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS dataset_exports (
+                        export_id TEXT PRIMARY KEY,
+                        artifact_path TEXT NOT NULL,
+                        split_paths_json TEXT NOT NULL,
+                        counts_json TEXT NOT NULL,
+                        source_job_ids_json TEXT NOT NULL,
+                        created_at TEXT NOT NULL,
+                        updated_at TEXT NOT NULL
+                    )
+                    """
+                )
                 self._ensure_job_columns(conn)
                 self._ensure_lab_run_columns(conn)
                 conn.execute(
@@ -162,6 +222,8 @@ class JobStore:
             "model_id": "TEXT NOT NULL DEFAULT 'local-deterministic'",
             "agent_id": "TEXT NOT NULL DEFAULT 'repo-editor-v1'",
             "harness_id": "TEXT NOT NULL DEFAULT 'local-template'",
+            "routing_policy": "TEXT NOT NULL DEFAULT 'fixed'",
+            "routing_decision_json": "TEXT NOT NULL DEFAULT '{}'",
             "working_branch": "TEXT NOT NULL DEFAULT ''",
         }
         for name, definition in additions.items():
@@ -189,11 +251,12 @@ class JobStore:
                     INSERT INTO jobs (
                         job_id, user_id, prompt, repo_path, repo_provider,
                         git_url, github_repo, parent_job_id, working_branch,
-                        model_id, agent_id, harness_id, base_branch, deploy_policy, token_budget,
+                        model_id, agent_id, harness_id, routing_policy,
+                        routing_decision_json, base_branch, deploy_policy, token_budget,
                         max_prompt_chars, max_runtime_seconds, max_changed_files,
                         status, created_at, updated_at
                     )
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         job["job_id"],
@@ -208,6 +271,8 @@ class JobStore:
                         job["model_id"],
                         job["agent_id"],
                         job["harness_id"],
+                        job["routing_policy"],
+                        json.dumps(job["routing_decision_json"], sort_keys=True),
                         job["base_branch"],
                         job["deploy_policy"],
                         job["token_budget"],
@@ -265,6 +330,146 @@ class JobStore:
         data = dict(row)
         data["profile_json"] = json.loads(data["profile_json"])
         data["test_commands_json"] = json.loads(data["test_commands_json"])
+        return data
+
+    def upsert_analysis_case(self, case: dict[str, Any]) -> None:
+        now = utc_now()
+        with closing(self._connect()) as conn:
+            with conn:
+                conn.execute(
+                    """
+                    INSERT INTO analysis_cases (
+                        case_id, title, category, prompt, task_ids_json, model_ids_json,
+                        agent_ids_json, harness_ids_json, success_criteria_json, tags_json,
+                        created_at, updated_at
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(case_id) DO UPDATE SET
+                        title = excluded.title,
+                        category = excluded.category,
+                        prompt = excluded.prompt,
+                        task_ids_json = excluded.task_ids_json,
+                        model_ids_json = excluded.model_ids_json,
+                        agent_ids_json = excluded.agent_ids_json,
+                        harness_ids_json = excluded.harness_ids_json,
+                        success_criteria_json = excluded.success_criteria_json,
+                        tags_json = excluded.tags_json,
+                        updated_at = excluded.updated_at
+                    """,
+                    (
+                        case["case_id"],
+                        case["title"],
+                        case["category"],
+                        case["prompt"],
+                        json.dumps(case["task_ids"], sort_keys=True),
+                        json.dumps(case["model_ids"], sort_keys=True),
+                        json.dumps(case["agent_ids"], sort_keys=True),
+                        json.dumps(case["harness_ids"], sort_keys=True),
+                        json.dumps(case["success_criteria"], sort_keys=True),
+                        json.dumps(case["tags"], sort_keys=True),
+                        now,
+                        now,
+                    ),
+                )
+
+    def list_analysis_cases(self) -> list[dict[str, Any]]:
+        with closing(self._connect()) as conn:
+            rows = conn.execute(
+                """
+                SELECT * FROM analysis_cases
+                ORDER BY category, case_id
+                """
+            ).fetchall()
+        return [self._analysis_case_row(row) for row in rows]
+
+    def get_analysis_case(self, case_id: str) -> dict[str, Any] | None:
+        with closing(self._connect()) as conn:
+            row = conn.execute(
+                "SELECT * FROM analysis_cases WHERE case_id = ?",
+                (case_id,),
+            ).fetchone()
+        return self._analysis_case_row(row) if row else None
+
+    def create_analysis_experiment(self, spec: dict[str, Any]) -> None:
+        now = utc_now()
+        with closing(self._connect()) as conn:
+            with conn:
+                conn.execute(
+                    """
+                    INSERT INTO analysis_experiments (
+                        experiment_id, case_id, name, spec_json, created_at, updated_at
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(experiment_id) DO UPDATE SET
+                        case_id = excluded.case_id,
+                        name = excluded.name,
+                        spec_json = excluded.spec_json,
+                        updated_at = excluded.updated_at
+                    """,
+                    (
+                        spec["experiment_id"],
+                        spec["case_id"],
+                        spec["name"],
+                        json.dumps(spec, sort_keys=True),
+                        now,
+                        now,
+                    ),
+                )
+
+    def get_analysis_experiment(self, experiment_id: str) -> dict[str, Any] | None:
+        with closing(self._connect()) as conn:
+            row = conn.execute(
+                """
+                SELECT * FROM analysis_experiments WHERE experiment_id = ?
+                """,
+                (experiment_id,),
+            ).fetchone()
+        if not row:
+            return None
+        data = dict(row)
+        data["spec_json"] = json.loads(data["spec_json"])
+        return data
+
+    def add_analysis_experiment_run(
+        self,
+        experiment_id: str,
+        case_id: str,
+        job_id: str,
+        analysis: dict[str, Any],
+    ) -> None:
+        with closing(self._connect()) as conn:
+            with conn:
+                conn.execute(
+                    """
+                    INSERT INTO analysis_experiment_runs (
+                        experiment_id, case_id, job_id, analysis_json, created_at
+                    )
+                    VALUES (?, ?, ?, ?, ?)
+                    """,
+                    (
+                        experiment_id,
+                        case_id,
+                        job_id,
+                        json.dumps(analysis, sort_keys=True),
+                        utc_now(),
+                    ),
+                )
+
+    def list_analysis_experiment_runs(self, experiment_id: str) -> list[dict[str, Any]]:
+        with closing(self._connect()) as conn:
+            rows = conn.execute(
+                """
+                SELECT * FROM analysis_experiment_runs
+                WHERE experiment_id = ?
+                ORDER BY id
+                """,
+                (experiment_id,),
+            ).fetchall()
+        data = []
+        for row in rows:
+            item = dict(row)
+            item["analysis_json"] = json.loads(item["analysis_json"])
+            data.append(item)
         return data
 
     def update_job(self, job_id: str, **fields: Any) -> None:
@@ -361,6 +566,49 @@ class JobStore:
                         run["updated_at"],
                     ),
                 )
+
+    def upsert_dataset_export(self, export: dict[str, Any]) -> None:
+        now = utc_now()
+        with closing(self._connect()) as conn:
+            with conn:
+                conn.execute(
+                    """
+                    INSERT INTO dataset_exports (
+                        export_id, artifact_path, split_paths_json, counts_json,
+                        source_job_ids_json, created_at, updated_at
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(export_id) DO UPDATE SET
+                        artifact_path = excluded.artifact_path,
+                        split_paths_json = excluded.split_paths_json,
+                        counts_json = excluded.counts_json,
+                        source_job_ids_json = excluded.source_job_ids_json,
+                        updated_at = excluded.updated_at
+                    """,
+                    (
+                        export["export_id"],
+                        export["artifact_path"],
+                        json.dumps(export["split_paths"], sort_keys=True),
+                        json.dumps(export["counts"], sort_keys=True),
+                        json.dumps(export["source_job_ids"], sort_keys=True),
+                        now,
+                        now,
+                    ),
+                )
+
+    def get_dataset_export(self, export_id: str) -> dict[str, Any] | None:
+        with closing(self._connect()) as conn:
+            row = conn.execute(
+                "SELECT * FROM dataset_exports WHERE export_id = ?",
+                (export_id,),
+            ).fetchone()
+        if not row:
+            return None
+        data = dict(row)
+        data["split_paths"] = json.loads(data.pop("split_paths_json"))
+        data["counts"] = json.loads(data.pop("counts_json"))
+        data["source_job_ids"] = json.loads(data.pop("source_job_ids_json"))
+        return data
 
     def get_job(self, job_id: str) -> dict[str, Any] | None:
         with closing(self._connect()) as conn:
@@ -665,4 +913,16 @@ class JobStore:
     def _row_to_dict(row: sqlite3.Row) -> dict[str, Any]:
         data = dict(row)
         data["result_json"] = json.loads(data["result_json"])
+        data["routing_decision_json"] = json.loads(data["routing_decision_json"])
+        return data
+
+    @staticmethod
+    def _analysis_case_row(row: sqlite3.Row) -> dict[str, Any]:
+        data = dict(row)
+        data["task_ids"] = json.loads(data.pop("task_ids_json"))
+        data["model_ids"] = json.loads(data.pop("model_ids_json"))
+        data["agent_ids"] = json.loads(data.pop("agent_ids_json"))
+        data["harness_ids"] = json.loads(data.pop("harness_ids_json"))
+        data["success_criteria"] = json.loads(data.pop("success_criteria_json"))
+        data["tags"] = json.loads(data.pop("tags_json"))
         return data

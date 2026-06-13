@@ -12,7 +12,13 @@ from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
 from cloud_agent_service.cloud_dispatch import EcsDispatchPlanner
-from cloud_agent_service.models import DeploymentPolicy, JobRequest, PromotionStatus, RepoProvider
+from cloud_agent_service.models import (
+    DeploymentPolicy,
+    JobRequest,
+    PromotionStatus,
+    RepoProvider,
+    RoutingPolicy,
+)
 from cloud_agent_service.orchestrator import LocalJobQueue, LocalOrchestrator
 from cloud_agent_service.pipeline import AgentCloudFlow, RequestValidationError
 from cloud_agent_service.store import JobStore
@@ -32,11 +38,46 @@ class CreateJobPayload(BaseModel):
     user_id: str = "local-user"
     base_branch: str = "main"
     deploy_policy: DeploymentPolicy = DeploymentPolicy.MANUAL
+    routing_policy: RoutingPolicy = RoutingPolicy.FIXED
     token_budget: int = 8_000
     max_prompt_chars: int = 8_000
     max_runtime_seconds: int = 600
     max_changed_files: int = 12
     run_immediately: bool = True
+
+
+class CreateExperimentPayload(BaseModel):
+    case_id: str = Field(min_length=1)
+    name: str | None = None
+    model_ids: list[str] | None = None
+    agent_ids: list[str] | None = None
+    harness_ids: list[str] | None = None
+    task_ids: list[str] | None = None
+    notes: str = ""
+
+
+class RunExperimentPayload(BaseModel):
+    repo_path: str = Field(min_length=1)
+    deploy_policy: DeploymentPolicy = DeploymentPolicy.PREVIEW_ONLY
+
+
+class DatasetExportPayload(BaseModel):
+    export_id: str | None = None
+    limit: int = 200
+    promotion_status: PromotionStatus | None = None
+
+
+class RouterRecommendPayload(BaseModel):
+    prompt: str = Field(min_length=1)
+    repo_path: str = ""
+    repo_provider: RepoProvider = RepoProvider.LOCAL
+    git_url: str | None = None
+    github_repo: str | None = None
+    model_id: str = "local-deterministic"
+    agent_id: str = "repo-editor-v1"
+    harness_id: str = "local-template"
+    deploy_policy: DeploymentPolicy = DeploymentPolicy.MANUAL
+    routing_policy: RoutingPolicy = RoutingPolicy.RECOMMEND_ONLY
 
 
 def build_flow() -> AgentCloudFlow:
@@ -108,6 +149,98 @@ def get_harness(harness_id: str) -> dict[str, Any]:
         return asdict(flow.harness_registry.get(harness_id))
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="harness not found") from exc
+
+
+@app.get("/analysis/cases")
+def list_analysis_cases() -> dict[str, Any]:
+    return {"cases": flow.list_analysis_cases()}
+
+
+@app.get("/analysis/cases/{case_id}")
+def get_analysis_case(case_id: str) -> dict[str, Any]:
+    case = flow.get_analysis_case(case_id)
+    if not case:
+        raise HTTPException(status_code=404, detail="analysis case not found")
+    return case
+
+
+@app.post("/analysis/experiments")
+def create_analysis_experiment(payload: CreateExperimentPayload) -> dict[str, Any]:
+    try:
+        return asdict(
+            flow.create_analysis_experiment(
+                case_id=payload.case_id,
+                name=payload.name,
+                model_ids=payload.model_ids,
+                agent_ids=payload.agent_ids,
+                harness_ids=payload.harness_ids,
+                task_ids=payload.task_ids,
+                notes=payload.notes,
+            )
+        )
+    except RequestValidationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/analysis/experiments/{experiment_id}/run")
+def run_analysis_experiment(
+    experiment_id: str,
+    payload: RunExperimentPayload,
+) -> dict[str, Any]:
+    try:
+        return asdict(
+            flow.run_analysis_experiment(
+                experiment_id,
+                repo_path=payload.repo_path,
+                deploy_policy=payload.deploy_policy,
+            )
+        )
+    except RequestValidationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.get("/analysis/experiments/{experiment_id}/report")
+def get_analysis_experiment_report(experiment_id: str) -> dict[str, Any]:
+    try:
+        return asdict(flow.experiment_report(experiment_id))
+    except RequestValidationError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@app.post("/datasets/exports")
+def create_dataset_export(payload: DatasetExportPayload) -> dict[str, Any]:
+    return asdict(
+        flow.export_slm_dataset(
+            export_id=payload.export_id,
+            limit=payload.limit,
+            promotion_status=payload.promotion_status,
+        )
+    )
+
+
+@app.get("/datasets/exports/{export_id}")
+def get_dataset_export(export_id: str) -> dict[str, Any]:
+    export = flow.get_dataset_export(export_id)
+    if not export:
+        raise HTTPException(status_code=404, detail="dataset export not found")
+    return export
+
+
+@app.post("/lab/router/recommend")
+def recommend_lab_route(payload: RouterRecommendPayload) -> dict[str, Any]:
+    request = JobRequest(
+        prompt=payload.prompt,
+        repo_path=payload.repo_path,
+        repo_provider=payload.repo_provider,
+        git_url=payload.git_url,
+        github_repo=payload.github_repo,
+        model_id=payload.model_id,
+        agent_id=payload.agent_id,
+        harness_id=payload.harness_id,
+        deploy_policy=payload.deploy_policy,
+        routing_policy=payload.routing_policy,
+    )
+    return asdict(flow.recommend_route(request))
 
 
 @app.post("/jobs")
@@ -285,6 +418,7 @@ def continue_job(
         user_id=parent["user_id"],
         base_branch=parent["base_branch"],
         deploy_policy=DeploymentPolicy(parent["deploy_policy"]),
+        routing_policy=RoutingPolicy(parent["routing_policy"]),
         token_budget=payload.token_budget or parent["token_budget"],
         max_changed_files=parent["max_changed_files"],
         max_runtime_seconds=parent["max_runtime_seconds"],
@@ -319,6 +453,7 @@ def _job_request_from_payload(payload: CreateJobPayload) -> JobRequest:
         user_id=payload.user_id,
         base_branch=payload.base_branch,
         deploy_policy=payload.deploy_policy,
+        routing_policy=payload.routing_policy,
         token_budget=payload.token_budget,
         max_prompt_chars=payload.max_prompt_chars,
         max_runtime_seconds=payload.max_runtime_seconds,

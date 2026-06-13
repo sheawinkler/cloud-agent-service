@@ -22,8 +22,11 @@ class ProjectArtifactTests(unittest.TestCase):
         self.assertIn("harness_spec", payload["job_payload"])
         self.assertIn("harness_adapter_contract", payload["job_payload"])
         self.assertIn("security_profile", payload["job_payload"])
+        self.assertIn("routing_policy", payload["job_payload"])
+        self.assertIn("routing_decision", payload["job_payload"])
         self.assertEqual("local-template", payload["job_payload"]["harness_id"])
         self.assertIn("harness_spec", payload["final_result"]["evidence"])
+        self.assertIn("routing_decision", payload["final_result"]["evidence"])
         self.assertIn("harness_adapter_result", payload["final_result"]["evidence"])
         self.assertIn("security_profile", payload["final_result"]["evidence"])
         self.assertIn("run_artifact", payload["final_result"]["evidence"])
@@ -83,6 +86,13 @@ class ProjectArtifactTests(unittest.TestCase):
         content = script.read_text(encoding="utf-8")
 
         self.assertIn("def run_smoke", content)
+        self.assertIn("if __name__ == \"__main__\"", content)
+
+    def test_dataset_export_script_has_standard_entrypoint(self):
+        script = ROOT / "scripts" / "export_slm_dataset.py"
+        content = script.read_text(encoding="utf-8")
+
+        self.assertIn("def export_dataset", content)
         self.assertIn("if __name__ == \"__main__\"", content)
 
 

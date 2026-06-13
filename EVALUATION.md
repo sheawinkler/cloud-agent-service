@@ -24,6 +24,9 @@ the deploy boundary when evidence is weak.
 | Harness adapter ABI | Harness execution is a stable contract rather than a hard-coded local action. | Worker payloads include `harness_adapter_contract`, and evidence includes `harness_adapter_result`. |
 | Security profiles | Harnesses declare command, secret, path, network, and runtime boundaries. | Worker payloads and evidence include `security_profile`. |
 | Replay artifacts | Successful runs leave replayable transcript and diff evidence. | `artifacts/runs/<job_id>/run-artifact.json` is complete before promotion. |
+| Analysis lab | Model/agent/harness experiments can be grouped and reported. | `/analysis/cases` and experiment reports classify runs and outcomes. |
+| SLM dataset export | Replay evidence can become redacted train/eval/holdout data. | `/datasets/exports` and `scripts/export_slm_dataset.py` write JSONL splits. |
+| Lab router | New work can be routed from evidence instead of hard-coded defaults. | `/lab/router/recommend` returns a `RoutingDecision`; default `fixed` behavior remains unchanged. |
 | Safety | Failed tests or policies stop sync/deploy. | Gate failure returns `failed` before mock PR/deploy. |
 | Preview proof | Reviewers get inspectable evidence before deploy. | Final result includes preview URL, preview artifact, and browser-proof checks. |
 | Promotion decision | The run has a clear model/agent verdict. | Final result returns `promote`, `reject`, or `needs_review` with evidence. |
@@ -50,6 +53,9 @@ the deploy boundary when evidence is weak.
 - Security profile selected by harness.
 - Run artifact completion rate.
 - Promotion rate by model/agent/harness tuple.
+- Analysis experiment score by case.
+- Dataset export counts by split.
+- Router confidence and fallback rate.
 - Generic Git sync success rate.
 - GitHub App sync success rate.
 - Average changed files per job.
@@ -187,12 +193,31 @@ the deploy boundary when evidence is weak.
     - Expected: rows are grouped by model, agent, and harness with promotion
       counts, promotion rate, and average changed files/tests/tokens.
 
+23. Analysis lab experiment
+    - Create an experiment for `model_bakeoff_repo_edit`, run it against a local
+      repo, then read the report.
+    - Expected: the report lists linked job IDs, promotion status counts,
+      failure categories, token usage, and run-artifact completeness.
+
+24. SLM dataset export
+    - Run successful jobs and call `/datasets/exports` or
+      `scripts/export_slm_dataset.py`.
+    - Expected: `train`, `eval`, and `holdout` JSONL files are valid, stable,
+      redacted, and contain no raw private paths or secret-looking values.
+
+25. Lab router
+    - Call `/lab/router/recommend` before and after successful lab history
+      exists, then submit a job with `routing_policy=auto_select`.
+    - Expected: cold routing falls back to caller defaults, warm routing uses
+      leaderboard evidence, and default `fixed` jobs remain unchanged.
+
 ## Evidence To Show In A Demo
 
 The demo should make these proof points visible without much narration:
 
 ```text
 job_created
+routing_decision_created
 harness_selected
 job_queued
 budget_charged
