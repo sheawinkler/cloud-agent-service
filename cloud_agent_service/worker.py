@@ -23,14 +23,20 @@ def build_flow() -> AgentCloudFlow:
 def main() -> None:
     parser = argparse.ArgumentParser(description="Run one local agent job.")
     parser.add_argument("--job-id", default=os.environ.get("AGENT_JOB_ID"))
+    parser.add_argument(
+        "--claim-next",
+        action="store_true",
+        help="Claim and run the oldest queued job from the local store.",
+    )
     parser.add_argument("--result-path", default=os.environ.get("AGENT_RESULT_PATH"))
     args = parser.parse_args()
 
-    if not args.job_id:
-        raise SystemExit("--job-id or AGENT_JOB_ID is required")
+    if not args.job_id and not args.claim_next:
+        raise SystemExit("--job-id, AGENT_JOB_ID, or --claim-next is required")
 
-    result = build_flow().run_job(args.job_id)
-    payload = asdict(result)
+    flow = build_flow()
+    result = flow.run_next_queued_job() if args.claim_next else flow.run_job(args.job_id)
+    payload = {"status": "idle"} if result is None else asdict(result)
     if args.result_path:
         Path(args.result_path).parent.mkdir(parents=True, exist_ok=True)
         Path(args.result_path).write_text(

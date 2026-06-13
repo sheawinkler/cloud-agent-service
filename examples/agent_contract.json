@@ -4,8 +4,96 @@
     "user_id": "local-user",
     "repo_provider": "local",
     "repo_path": "/host_repo",
+    "git_url": null,
+    "github_repo": null,
     "base_branch": "main",
     "working_branch": "agent/demo-job-001",
+    "parent_job_id": null,
+    "model_id": "local-deterministic",
+    "agent_id": "repo-editor-v1",
+    "harness_id": "local-template",
+    "model_spec": {
+      "model_id": "local-deterministic",
+      "provider": "local",
+      "name": "deterministic-repo-editor",
+      "context_window": 8000,
+      "cost_tier": "free-local",
+      "supports_tools": true
+    },
+    "agent_spec": {
+      "agent_id": "repo-editor-v1",
+      "role": "repo_editor",
+      "model_id": "local-deterministic",
+      "allowed_shell_commands": [
+        "git",
+        "python",
+        "python3",
+        "pip",
+        "pytest",
+        "ruff",
+        "mypy",
+        "npm",
+        "pnpm",
+        "yarn"
+      ],
+      "output_contract": "job_result.v1"
+    },
+    "harness_spec": {
+      "harness_id": "local-template",
+      "name": "Local Deterministic Template Harness",
+      "category": "custom",
+      "rank": null,
+      "provider": "cloud-agent-service",
+      "runtime": "python-standard-library",
+      "execution_contract": "local-deterministic-edit.v1",
+      "repo_url": null,
+      "docs_url": "local://cloud-agent-service/harnesses/local-template",
+      "install_hint": "built in",
+      "env_requirements": [],
+      "strengths": [
+        "offline deterministic smoke path",
+        "stable tests",
+        "no external secrets"
+      ],
+      "integration_notes": [
+        "Default harness for local MVP proof.",
+        "Use top-20 or custom harness IDs to hand workers a different runtime contract."
+      ]
+    },
+    "harness_adapter_contract": {
+      "adapter_id": "local-template-adapter",
+      "harness_id": "local-template",
+      "mode": "local-deterministic",
+      "command_template": [],
+      "input_contract": "harness_execution_request.v1",
+      "output_contract": "harness_execution_result.v1",
+      "enabled": true,
+      "notes": [
+        "Executes deterministic local templates.",
+        "For non-local harness IDs this is a contract fallback, not live harness execution."
+      ]
+    },
+    "security_profile": {
+      "profile_id": "local-template.locked-down.v1",
+      "harness_id": "local-template",
+      "network_policy": "none",
+      "allowed_commands": [
+        "python3 -m compileall ."
+      ],
+      "readable_paths": [
+        "repo/**"
+      ],
+      "writable_paths": [
+        "repo/**",
+        "artifacts/runs/**"
+      ],
+      "secret_env_vars": [],
+      "max_runtime_seconds": 600,
+      "log_redaction_patterns": [
+        "sk-[A-Za-z0-9_-]+",
+        "AKIA[0-9A-Z]{16}"
+      ]
+    },
     "normalized_prompt": "For my shopping website, create a buy button.",
     "acceptance_criteria": [
       "Inspect the repository before editing.",
@@ -26,6 +114,7 @@
     ],
     "allowed_shell_commands": [
       "git",
+      "python",
       "python3",
       "pip",
       "pytest",
@@ -39,8 +128,48 @@
     "max_runtime_seconds": 600,
     "max_changed_files": 12,
     "deployment_policy": "manual",
-    "status_callback_url": "http://api/jobs/demo-job-001"
+    "routing_policy": "fixed",
+    "routing_decision": {
+      "routing_policy": "fixed",
+      "selected_model_id": "local-deterministic",
+      "selected_agent_id": "repo-editor-v1",
+      "selected_harness_id": "local-template",
+      "confidence": 1.0,
+      "reason": "Fixed routing policy preserves the caller-selected lab tuple.",
+      "nearest_analysis_cases": [
+        "model_bakeoff_repo_edit"
+      ],
+      "fallback": false
+    },
+    "status_callback_url": "local://jobs/demo-job-001",
+    "output_schema": {
+      "changed_files": "list[str]",
+      "commands_run": "list[str]",
+      "tests_passed": "list[str]",
+      "tests_failed": "list[str]",
+      "dependency_changes": "list[str]",
+      "policy_gate_results": "dict[str, bool]",
+      "pr_url": "str|null",
+      "deployment_status": "str",
+      "residual_risks": "list[str]",
+      "evidence": "dict[str, object]",
+      "promotion_decision": "dict[str, object]",
+      "harness_adapter_result": "dict[str, object]",
+      "run_artifact": "dict[str, object]"
+    }
   },
+  "budget_ledger_example": [
+    {
+      "stage": "dispatch",
+      "token_delta": 64,
+      "tokens_used": 64
+    },
+    {
+      "stage": "repo_analysis",
+      "token_delta": 128,
+      "tokens_used": 192
+    }
+  ],
   "final_result": {
     "job_id": "demo-job-001",
     "status": "succeeded",
@@ -59,12 +188,180 @@
       "repo_tests": true,
       "secret_scan": true,
       "diff_policy": true,
+      "protected_path_policy": true,
       "dependency_policy": true,
-      "deployment_policy": true
+      "deployment_policy": true,
+      "artifact_policy": true,
+      "transcript_policy": true,
+      "security_profile_policy": true
     },
     "pr_url": "local://github/pr/demo-job-001",
     "deployment_status": "ready: manual approval required",
-    "residual_risks": []
+    "residual_risks": [],
+    "evidence": {
+      "job_id": "demo-job-001",
+      "repo_provider": "local",
+      "repo_key": "local:/host_repo",
+      "git_target": null,
+      "github_repo": null,
+      "model_spec": {
+        "model_id": "local-deterministic",
+        "provider": "local",
+        "name": "deterministic-repo-editor",
+        "context_window": 8000,
+        "cost_tier": "free-local",
+        "supports_tools": true
+      },
+      "agent_spec": {
+        "agent_id": "repo-editor-v1",
+        "role": "repo_editor",
+        "model_id": "local-deterministic",
+        "allowed_shell_commands": [
+          "git",
+          "python",
+          "python3",
+          "pip",
+          "pytest",
+          "ruff",
+          "mypy",
+          "npm",
+          "pnpm",
+          "yarn"
+        ],
+        "output_contract": "job_result.v1"
+      },
+      "harness_spec": {
+        "harness_id": "local-template",
+        "name": "Local Deterministic Template Harness",
+        "category": "custom",
+        "rank": null,
+        "provider": "cloud-agent-service",
+        "runtime": "python-standard-library",
+        "execution_contract": "local-deterministic-edit.v1",
+        "repo_url": null,
+        "docs_url": "local://cloud-agent-service/harnesses/local-template",
+        "install_hint": "built in",
+        "env_requirements": [],
+        "strengths": [
+          "offline deterministic smoke path",
+          "stable tests",
+          "no external secrets"
+        ],
+        "integration_notes": [
+          "Default harness for local MVP proof.",
+          "Use top-20 or custom harness IDs to hand workers a different runtime contract."
+        ]
+      },
+      "routing_policy": "fixed",
+      "routing_decision": {
+        "routing_policy": "fixed",
+        "selected_model_id": "local-deterministic",
+        "selected_agent_id": "repo-editor-v1",
+        "selected_harness_id": "local-template",
+        "confidence": 1.0,
+        "reason": "Fixed routing policy preserves the caller-selected lab tuple.",
+        "nearest_analysis_cases": [
+          "model_bakeoff_repo_edit"
+        ],
+        "fallback": false
+      },
+      "security_profile": {
+        "profile_id": "local-template.locked-down.v1",
+        "harness_id": "local-template",
+        "network_policy": "none",
+        "allowed_commands": [
+          "python3 -m compileall ."
+        ],
+        "readable_paths": [
+          "repo/**"
+        ],
+        "writable_paths": [
+          "repo/**",
+          "artifacts/runs/**"
+        ],
+        "secret_env_vars": [],
+        "max_runtime_seconds": 600,
+        "log_redaction_patterns": [
+          "sk-[A-Za-z0-9_-]+",
+          "AKIA[0-9A-Z]{16}"
+        ]
+      },
+      "harness_adapter_result": {
+        "adapter_id": "local-template-adapter",
+        "adapter_status": "executed",
+        "changed_files": [
+          "index.html"
+        ],
+        "commands_run": [],
+        "tests_passed": [],
+        "tests_failed": [],
+        "dependency_changes": [],
+        "residual_risks": [],
+        "transcript": [
+          "adapter=local-template-adapter",
+          "harness_id=local-template",
+          "action=added deterministic buy button"
+        ],
+        "raw_artifacts": {
+          "deterministic_template": true,
+          "fallback": false
+        }
+      },
+      "preview_url": "local://preview/demo-job-001/index.html",
+      "preview_artifact_path": "artifacts/previews/demo-job-001/index.html",
+      "browser_proof_path": "artifacts/previews/demo-job-001/browser-proof.json",
+      "browser_checks": {
+        "html_preview_available": true,
+        "buy_button_present": true
+      },
+      "run_artifact": {
+        "schema_version": "run-artifact.v1",
+        "artifact_path": "artifacts/runs/demo-job-001/run-artifact.json",
+        "transcript_path": "artifacts/runs/demo-job-001/transcript.txt",
+        "diff_path": "artifacts/runs/demo-job-001/diff.patch",
+        "complete": true
+      },
+      "repo_profile": {
+        "package_manager": null,
+        "framework": "html",
+        "detected_files": [
+          "index.html"
+        ],
+        "suggested_test_commands": [
+          "python3 -m compileall ."
+        ],
+        "risk_notes": []
+      }
+    },
+    "promotion_decision": {
+      "status": "needs_review",
+      "reason": "Run passed tests and policy gates; human review is required before merge or deploy.",
+      "evidence": {
+        "tests_failed": [],
+        "changed_files": [
+          "index.html"
+        ],
+        "deployment_status": "ready: manual approval required",
+        "preview_url": "local://preview/demo-job-001/index.html",
+        "policy_gate_results": {
+          "repo_tests": true,
+          "secret_scan": true,
+          "diff_policy": true,
+          "protected_path_policy": true,
+          "dependency_policy": true,
+          "deployment_policy": true,
+          "artifact_policy": true,
+          "transcript_policy": true,
+          "security_profile_policy": true
+        },
+        "run_artifact": {
+          "schema_version": "run-artifact.v1",
+          "artifact_path": "artifacts/runs/demo-job-001/run-artifact.json",
+          "transcript_path": "artifacts/runs/demo-job-001/transcript.txt",
+          "diff_path": "artifacts/runs/demo-job-001/diff.patch",
+          "complete": true
+        }
+      }
+    }
   }
 }
-

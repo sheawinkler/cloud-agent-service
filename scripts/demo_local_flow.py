@@ -55,6 +55,8 @@ def main() -> None:
             "changed_files": result.changed_files,
             "tests_failed": result.tests_failed,
             "deployment_status": result.deployment_status,
+            "preview_url": result.evidence.get("preview_url"),
+            "browser_checks": result.evidence.get("browser_checks", {}),
             "events": [event["event_type"] for event in result.events],
             "result": asdict(result),
         }
@@ -67,6 +69,7 @@ def main() -> None:
         print(f"job_id: {job_id}")
         print(f"changed_files: {', '.join(result.changed_files)}")
         print(f"tests_failed: {len(result.tests_failed)}")
+        print(f"preview: {result.evidence.get('preview_url')}")
         print(f"deployment: {result.deployment_status}")
         print("events:")
         for event in payload["events"]:

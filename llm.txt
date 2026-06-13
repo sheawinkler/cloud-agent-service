@@ -1,16 +1,43 @@
-Cloud Agent Service Local MVP
-=============================
+Cloud Agent Service MVP
+=======================
 
 Purpose:
-This directory implements a local-only skeleton for a cloud coding-agent
-application. It accepts a user request, validates it, upgrades the prompt,
-creates a job, runs a local agent workflow, tests changes, applies policy gates,
-records a mock GitHub PR, and records a mock deployment.
+This directory implements an MVP for a cloud coding-agent application. It
+accepts a user request, validates it, upgrades the prompt, creates a job, runs a
+repo-editing agent workflow, tests changes, applies policy gates, records
+evidence, and syncs review output through local mock, generic Git, or GitHub App
+paths.
+Terminal runs are indexed in `lab_runs` so model/agent/harness promotion
+outcomes can be queried and summarized.
+Task suites, runtime status, optional auth/quotas, a lab UI, and ECS dry-run
+dispatch plans are present as productization scaffolding. The harness registry
+pre-indexes current agent harnesses, exposes a top_20 slice, and accepts
+`custom:<name>` harness IDs as dispatch contracts.
+Harness execution goes through an adapter ABI, attaches a per-harness security
+profile, writes replayable run artifacts, and feeds a model/agent/harness
+leaderboard.
+Analysis cases, experiment reports, SLM dataset export, and router decisions
+turn the control loop into a small Language Model Lab surface.
 
 Important boundary:
-The current implementation does not push to GitHub, does not call AWS, and does
-not perform a real deployment. Local PR and deployment outputs are artifacts used
-to prove the control flow.
+The current implementation does not call AWS and does not perform a real
+deployment. Local PR and deployment outputs are artifacts used to prove the
+control flow. Generic Git jobs push review branches to origin. GitHub App jobs
+require app credentials before claiming live clone/push/PR behavior.
+OpenAI Responses-backed agent runs require explicit enablement and an API key;
+the default path is still deterministic and offline.
+Ranked and custom harness IDs do not mean those third-party CLIs or managed
+agents execute; a worker image or adapter must implement the selected harness
+before live execution can be claimed.
+The default local-template adapter is deterministic. The pi-coding-agent
+adapter is opt-in via AGENT_CLOUD_ENABLE_PI_CODING_AGENT or
+AGENT_CLOUD_ENABLE_EXTERNAL_HARNESS plus AGENT_CLOUD_PI_CODING_AGENT_CMD.
+
+Mirendil framing:
+Treat each repo update as a minimal model lab run: ModelSpec + AgentSpec +
+HarnessSpec + bounded task + evidence -> PromotionDecision. The current default
+model is local-deterministic; do not claim external SLM/LLM inference unless
+wired and verified.
 
 Primary files:
 - app.py: FastAPI API.
@@ -18,17 +45,32 @@ Primary files:
 - store.py: SQLite job and event storage.
 - orchestrator.py: local queue and runner.
 - worker.py: one-job container entry point.
+- cloud_dispatch.py: ECS/Fargate dry-run dispatch request builder.
+- harness_registry.py: ranked agent harness index, top_20 slice, and custom
+  harness contracts.
+- harness_adapters.py: adapter ABI plus local-template and opt-in Pi adapters.
+- security_profiles.py: harness command, secret, path, network, and runtime
+  boundaries.
+- artifact_schema.py: run-artifact.json, transcript, diff, and artifact gates.
+- task_corpus.py: shared replayable task corpus.
+- analysis_lab.py: seeded analysis cases and experiment reports.
+- dataset_export.py: redacted SLM JSONL export from replay artifacts.
+- lab_router.py: leaderboard-backed routing decisions.
 - compose.yaml: Docker Compose for local API/worker builds.
 - EVALUATION.md: product and operational evaluation criteria.
 - examples/agent_contract.json: worker payload and final result example.
 - demo.sh: one-command local demo.
 - scripts/demo_local_flow.py: no-cloud happy path demo.
+- scripts/evaluate_mvp.py: single golden task evaluator.
+- scripts/evaluate_task_suite.py: multi-run lab evaluator.
 - scripts/install_allowed_modules.sh: dependency allowlist installer.
 - tests/test_cloud_agent_service_flow.py: deterministic flow tests.
 
 Run commands:
 - python3 -m compileall cloud_agent_service scripts tests
 - ./demo.sh
+- python3 scripts/evaluate_mvp.py
+- python3 scripts/evaluate_task_suite.py
 - python3 -m unittest tests.test_cloud_agent_service_flow
 - python3 -m unittest discover -s tests
 - docker --context orbstack compose -f compose.yaml up -d --build api
@@ -38,22 +80,55 @@ Monitor commands:
 - docker --context orbstack compose -f compose.yaml ps
 - docker --context orbstack compose -f compose.yaml logs --tail=120 api
 - curl -sS http://127.0.0.1:8000/jobs/<job_id>
+- curl -sS http://127.0.0.1:8000/lab/summary
+- curl -sS http://127.0.0.1:8000/lab/leaderboard
+- curl -sS http://127.0.0.1:8000/tasks/corpus
+- curl -sS http://127.0.0.1:8000/analysis/cases
+- curl -sS http://127.0.0.1:8000/datasets/exports/<export_id>
+- curl -sS http://127.0.0.1:8000/models
+- curl -sS http://127.0.0.1:8000/harnesses
+- curl -sS http://127.0.0.1:8000/integrations/cloud/status
 
 Expected successful flow:
 1. Receive prompt.
 2. Validate prompt, repo path, budgets, and runtime limits.
-3. Upgrade prompt into a concise implementation brief.
-4. Create job record and queue event.
-5. Dispatch local worker/container contract.
-6. Copy repo into an isolated workspace.
-7. Execute deterministic local coding action.
-8. Run compile/test checks.
-9. Apply policy gates.
-10. Record mock PR/deployment and return final status.
+3. Select and record the harness contract.
+4. Upgrade prompt into a concise implementation brief.
+5. Create job record and queue event.
+6. Dispatch local worker/container contract.
+7. Copy or clone repo into an isolated workspace.
+8. Record lab run config: model_id, agent_id, and harness_id.
+9. Execute deterministic or selected adapter coding action.
+10. Run compile/test checks.
+11. Apply policy gates.
+12. Record preview/browser/run-artifact evidence.
+13. Sync review output and return final status plus promotion decision.
+14. Index the terminal run for lab summary, task-suite comparison, analysis
+    reports, dataset export, and router recommendations.
 
 Do not:
 - Treat mock PR URLs as real GitHub PRs.
+- Treat local-deterministic as live external model inference.
 - Treat local deployment artifacts as production deploys.
+- Treat ECS dispatch plans as submitted AWS tasks.
+- Treat indexed harness IDs as live adapter execution without worker proof.
 - Commit runtime SQLite databases, generated workspaces, or artifacts.
 - Add package dependencies without updating the allowlist and tests.
 - Log or persist secrets.
+
+Useful API reads:
+- GET /lab/runs
+- GET /lab/runs?model_id=local-deterministic&promotion_status=promote
+- GET /lab/summary
+- GET /lab/leaderboard
+- GET /tasks/corpus
+- GET /analysis/cases
+- GET /datasets/exports/<export_id>
+- POST /lab/router/recommend
+- GET /lab
+- GET /models
+- GET /harnesses
+- GET /harnesses/<harness_id>
+- GET /auth/status
+- GET /users/<user_id>/quota
+- GET /jobs/<job_id>/cloud-dispatch-plan
