@@ -1,8 +1,8 @@
 # Agent Instructions for `cloud_agent_service`
 
 This directory is an MVP for a cloud coding-agent platform. It mirrors the
-intended AWS/ECS architecture without creating cloud resources or deploying real
-infrastructure. Local repo jobs use mock PR/deploy artifacts. Generic Git jobs
+intended AWS/ECS architecture and can submit ECS tasks only when explicit live
+submit env flags are configured. Local repo jobs use mock PR/deploy artifacts. Generic Git jobs
 clone and push a review branch to `origin`. GitHub repo jobs use the real GitHub
 App clone, branch push, and PR path only when app credentials are configured.
 Each repo update is also a minimal lab run: `ModelSpec` + `AgentSpec` +
@@ -27,6 +27,13 @@ Each repo update is also a minimal lab run: `ModelSpec` + `AgentSpec` +
   unless the worker image or adapter actually implements that harness.
 - Treat `deployed: local mock deployment recorded` as a local artifact, not a
   production deployment.
+- Treat `/jobs/<job_id>/cloud-dispatch-plan` as dry-run. Treat
+  `/jobs/<job_id>/cloud-dispatch` as live only when
+  `AGENT_CLOUD_ECS_SUBMIT_ENABLED=1` and AWS/ECS env is configured.
+- Set `AGENT_CLOUD_STATUS_CALLBACK_URL` to the externally reachable API `/jobs`
+  base before live cloud dispatch; local defaults intentionally skip callbacks.
+- Treat artifact storage as local unless `AGENT_CLOUD_ARTIFACT_PROVIDER` and
+  related env are configured.
 - Do not persist secrets in docs, logs, SQLite data, test fixtures, or examples.
 - Do not commit or preserve runtime artifacts from `.runtime/`.
 - Docker Compose runtime state lives in the `runtime_data` Docker volume.
@@ -41,7 +48,9 @@ Each repo update is also a minimal lab run: `ModelSpec` + `AgentSpec` +
 - `store.py`: SQLite job and event persistence.
 - `orchestrator.py`: local queue plus persisted queued-job runner.
 - `worker.py`: container-friendly one-job or claim-next entry point.
-- `cloud_dispatch.py`: AWS ECS/Fargate dry-run dispatch request builder.
+- `cloud_dispatch.py`: AWS ECS/Fargate dry-run dispatch request builder and
+  env-gated live submitter.
+- `artifact_store.py`: local/S3 artifact-reference indexing.
 - `harness_registry.py`: pre-indexed agent harness registry, top-20 slice, and
   custom harness contract support.
 - `harness_adapters.py`: harness adapter ABI, deterministic local adapter, and
@@ -116,6 +125,8 @@ docker --context orbstack compose -f compose.yaml ps
 docker --context orbstack compose -f compose.yaml logs --tail=120 api
 curl -sS http://127.0.0.1:8000/jobs/<job_id>
 curl -sS http://127.0.0.1:8000/jobs/<job_id>/worker-payload
+curl -sS http://127.0.0.1:8000/jobs/<job_id>/artifacts
+curl -sS http://127.0.0.1:8000/jobs/<job_id>/worker-callbacks
 curl -sS http://127.0.0.1:8000/jobs/<job_id>/budget
 curl -sS http://127.0.0.1:8000/jobs/<job_id>/events
 curl -sS http://127.0.0.1:8000/lab/runs
@@ -128,6 +139,7 @@ curl -sS http://127.0.0.1:8000/models
 curl -sS http://127.0.0.1:8000/harnesses
 curl -sS http://127.0.0.1:8000/auth/status
 curl -sS http://127.0.0.1:8000/integrations/cloud/status
+curl -sS http://127.0.0.1:8000/jobs/<job_id>/cloud-dispatch-plan
 python -m cloud_agent_service.worker --claim-next
 ```
 

@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import hashlib
+import importlib
 import os
 from dataclasses import asdict, dataclass
 from typing import Any
 
-from cloud_agent_service.models import WorkerJobPayload
+from cloud_agent_service.models import CloudDispatchRecord, CloudDispatchStatus, WorkerJobPayload
 
 
 @dataclass(frozen=True)
@@ -28,11 +30,16 @@ class EcsDispatchPlanner:
 
     def status(self) -> dict[str, Any]:
         missing = [name for name in self.REQUIRED_ENV if not os.environ.get(name)]
+        submit_enabled = _truthy(os.environ.get("AGENT_CLOUD_ECS_SUBMIT_ENABLED"))
+        mode = "local-only"
+        if not missing:
+            mode = "live-submit" if submit_enabled else "dry-run-contract"
         return {
             "configured": not missing,
             "provider": "aws-ecs",
-            "mode": "dry-run-contract" if not missing else "local-only",
+            "mode": mode,
             "missing": missing,
+            "submit_enabled": submit_enabled,
         }
 
     def config_from_env(self) -> EcsDispatchConfig:
@@ -103,6 +110,68 @@ class EcsDispatchPlanner:
             },
             "worker_payload": asdict(payload),
         }
+
+    def submit_run_task(
+        self,
+        payload: WorkerJobPayload,
+        ecs_client: Any | None = None,
+    ) -> CloudDispatchRecord:
+        if not _truthy(os.environ.get("AGENT_CLOUD_ECS_SUBMIT_ENABLED")):
+            raise ValueError("ECS submit is disabled; set AGENT_CLOUD_ECS_SUBMIT_ENABLED=1")
+        plan = self.build_run_task_request(payload)
+        request = plan["run_task_request"]
+        region = plan["region"]
+        client = ecs_client or self._ecs_client(region)
+        try:
+            response = client.run_task(**request)
+        except Exception as exc:
+            return CloudDispatchRecord(
+                dispatch_id=self._dispatch_id(payload.job_id, request, {"error": str(exc)}),
+                job_id=payload.job_id,
+                provider="aws-ecs",
+                mode="live-submit",
+                status=CloudDispatchStatus.FAILED,
+                task_arn=None,
+                region=region,
+                request=request,
+                response={"error": str(exc)},
+            )
+        tasks = response.get("tasks", []) if isinstance(response, dict) else []
+        task_arn = tasks[0].get("taskArn") if tasks else None
+        return CloudDispatchRecord(
+            dispatch_id=self._dispatch_id(payload.job_id, request, response),
+            job_id=payload.job_id,
+            provider="aws-ecs",
+            mode="live-submit",
+            status=CloudDispatchStatus.SUBMITTED,
+            task_arn=task_arn,
+            region=region,
+            request=request,
+            response=self._response_summary(response),
+        )
+
+    @staticmethod
+    def _ecs_client(region: str) -> Any:
+        boto3 = importlib.import_module("boto3")
+        return boto3.client("ecs", region_name=region)
+
+    @staticmethod
+    def _response_summary(response: dict[str, Any]) -> dict[str, Any]:
+        tasks = response.get("tasks", [])
+        return {
+            "task_arns": [task.get("taskArn") for task in tasks if task.get("taskArn")],
+            "failures": response.get("failures", []),
+            "response_metadata": response.get("ResponseMetadata", {}),
+        }
+
+    @staticmethod
+    def _dispatch_id(
+        job_id: str,
+        request: dict[str, Any],
+        response: dict[str, Any],
+    ) -> str:
+        seed = f"{job_id}|{request}|{response}"
+        return "dispatch_" + hashlib.sha256(seed.encode("utf-8")).hexdigest()[:16]
 
 
 def _csv_env(name: str) -> list[str]:

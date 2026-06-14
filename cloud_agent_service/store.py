@@ -174,13 +174,79 @@ class JobStore:
                         split_paths_json TEXT NOT NULL,
                         counts_json TEXT NOT NULL,
                         source_job_ids_json TEXT NOT NULL,
+                        lineage_json TEXT NOT NULL DEFAULT '{}',
                         created_at TEXT NOT NULL,
                         updated_at TEXT NOT NULL
                     )
                     """
                 )
+                conn.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS cloud_dispatches (
+                        dispatch_id TEXT PRIMARY KEY,
+                        job_id TEXT NOT NULL,
+                        provider TEXT NOT NULL,
+                        mode TEXT NOT NULL,
+                        status TEXT NOT NULL,
+                        task_arn TEXT,
+                        region TEXT NOT NULL,
+                        request_json TEXT NOT NULL,
+                        response_json TEXT NOT NULL,
+                        created_at TEXT NOT NULL,
+                        updated_at TEXT NOT NULL,
+                        FOREIGN KEY(job_id) REFERENCES jobs(job_id)
+                    )
+                    """
+                )
+                conn.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS worker_callbacks (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        job_id TEXT NOT NULL,
+                        callback_type TEXT NOT NULL,
+                        status TEXT NOT NULL,
+                        payload_json TEXT NOT NULL,
+                        created_at TEXT NOT NULL,
+                        FOREIGN KEY(job_id) REFERENCES jobs(job_id)
+                    )
+                    """
+                )
+                conn.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS artifact_refs (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        job_id TEXT NOT NULL,
+                        artifact_type TEXT NOT NULL,
+                        provider TEXT NOT NULL,
+                        uri TEXT NOT NULL,
+                        path TEXT NOT NULL,
+                        sha256 TEXT NOT NULL,
+                        bytes INTEGER NOT NULL,
+                        created_at TEXT NOT NULL,
+                        FOREIGN KEY(job_id) REFERENCES jobs(job_id)
+                    )
+                    """
+                )
+                conn.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS analysis_experiment_batches (
+                        batch_id TEXT PRIMARY KEY,
+                        experiment_id TEXT NOT NULL,
+                        status TEXT NOT NULL,
+                        max_concurrency INTEGER NOT NULL,
+                        requested_jobs INTEGER NOT NULL,
+                        completed_jobs INTEGER NOT NULL,
+                        failed_jobs INTEGER NOT NULL,
+                        job_ids_json TEXT NOT NULL,
+                        created_at TEXT NOT NULL,
+                        updated_at TEXT NOT NULL,
+                        FOREIGN KEY(experiment_id) REFERENCES analysis_experiments(experiment_id)
+                    )
+                    """
+                )
                 self._ensure_job_columns(conn)
                 self._ensure_lab_run_columns(conn)
+                self._ensure_dataset_export_columns(conn)
                 conn.execute(
                     """
                     CREATE INDEX IF NOT EXISTS idx_lab_runs_model_agent_status
@@ -241,6 +307,18 @@ class JobStore:
         for name, definition in additions.items():
             if name not in columns:
                 conn.execute(f"ALTER TABLE lab_runs ADD COLUMN {name} {definition}")
+
+    def _ensure_dataset_export_columns(self, conn: sqlite3.Connection) -> None:
+        columns = {
+            row["name"]
+            for row in conn.execute("PRAGMA table_info(dataset_exports)").fetchall()
+        }
+        additions = {
+            "lineage_json": "TEXT NOT NULL DEFAULT '{}'",
+        }
+        for name, definition in additions.items():
+            if name not in columns:
+                conn.execute(f"ALTER TABLE dataset_exports ADD COLUMN {name} {definition}")
 
     def create_job(self, job: dict[str, Any]) -> None:
         now = utc_now()
@@ -575,14 +653,15 @@ class JobStore:
                     """
                     INSERT INTO dataset_exports (
                         export_id, artifact_path, split_paths_json, counts_json,
-                        source_job_ids_json, created_at, updated_at
+                        source_job_ids_json, lineage_json, created_at, updated_at
                     )
-                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(export_id) DO UPDATE SET
                         artifact_path = excluded.artifact_path,
                         split_paths_json = excluded.split_paths_json,
                         counts_json = excluded.counts_json,
                         source_job_ids_json = excluded.source_job_ids_json,
+                        lineage_json = excluded.lineage_json,
                         updated_at = excluded.updated_at
                     """,
                     (
@@ -591,6 +670,7 @@ class JobStore:
                         json.dumps(export["split_paths"], sort_keys=True),
                         json.dumps(export["counts"], sort_keys=True),
                         json.dumps(export["source_job_ids"], sort_keys=True),
+                        json.dumps(export.get("lineage", {}), sort_keys=True),
                         now,
                         now,
                     ),
@@ -608,7 +688,185 @@ class JobStore:
         data["split_paths"] = json.loads(data.pop("split_paths_json"))
         data["counts"] = json.loads(data.pop("counts_json"))
         data["source_job_ids"] = json.loads(data.pop("source_job_ids_json"))
+        data["lineage"] = json.loads(data.pop("lineage_json"))
         return data
+
+    def upsert_cloud_dispatch(self, dispatch: dict[str, Any]) -> None:
+        now = utc_now()
+        with closing(self._connect()) as conn:
+            with conn:
+                conn.execute(
+                    """
+                    INSERT INTO cloud_dispatches (
+                        dispatch_id, job_id, provider, mode, status, task_arn, region,
+                        request_json, response_json, created_at, updated_at
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(dispatch_id) DO UPDATE SET
+                        status = excluded.status,
+                        task_arn = excluded.task_arn,
+                        response_json = excluded.response_json,
+                        updated_at = excluded.updated_at
+                    """,
+                    (
+                        dispatch["dispatch_id"],
+                        dispatch["job_id"],
+                        dispatch["provider"],
+                        dispatch["mode"],
+                        dispatch["status"],
+                        dispatch.get("task_arn"),
+                        dispatch["region"],
+                        json.dumps(dispatch["request"], sort_keys=True),
+                        json.dumps(dispatch["response"], sort_keys=True),
+                        now,
+                        now,
+                    ),
+                )
+
+    def get_cloud_dispatch(self, dispatch_id: str) -> dict[str, Any] | None:
+        with closing(self._connect()) as conn:
+            row = conn.execute(
+                "SELECT * FROM cloud_dispatches WHERE dispatch_id = ?",
+                (dispatch_id,),
+            ).fetchone()
+        return self._cloud_dispatch_row(row) if row else None
+
+    def list_cloud_dispatches(self, job_id: str | None = None) -> list[dict[str, Any]]:
+        query = "SELECT * FROM cloud_dispatches"
+        params: list[Any] = []
+        if job_id:
+            query += " WHERE job_id = ?"
+            params.append(job_id)
+        query += " ORDER BY created_at DESC"
+        with closing(self._connect()) as conn:
+            rows = conn.execute(query, params).fetchall()
+        return [self._cloud_dispatch_row(row) for row in rows]
+
+    def add_worker_callback(
+        self,
+        job_id: str,
+        callback_type: str,
+        status: str,
+        payload: dict[str, Any],
+    ) -> None:
+        with closing(self._connect()) as conn:
+            with conn:
+                conn.execute(
+                    """
+                    INSERT INTO worker_callbacks (
+                        job_id, callback_type, status, payload_json, created_at
+                    )
+                    VALUES (?, ?, ?, ?, ?)
+                    """,
+                    (
+                        job_id,
+                        callback_type,
+                        status,
+                        json.dumps(payload, sort_keys=True),
+                        utc_now(),
+                    ),
+                )
+
+    def list_worker_callbacks(self, job_id: str) -> list[dict[str, Any]]:
+        with closing(self._connect()) as conn:
+            rows = conn.execute(
+                """
+                SELECT * FROM worker_callbacks
+                WHERE job_id = ?
+                ORDER BY id
+                """,
+                (job_id,),
+            ).fetchall()
+        return [self._worker_callback_row(row) for row in rows]
+
+    def add_artifact_refs(self, refs: list[dict[str, Any]]) -> None:
+        if not refs:
+            return
+        with closing(self._connect()) as conn:
+            with conn:
+                for ref in refs:
+                    conn.execute(
+                        """
+                        INSERT INTO artifact_refs (
+                            job_id, artifact_type, provider, uri, path, sha256, bytes, created_at
+                        )
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            ref["job_id"],
+                            ref["artifact_type"],
+                            ref["provider"],
+                            ref["uri"],
+                            ref["path"],
+                            ref["sha256"],
+                            ref["bytes"],
+                            utc_now(),
+                        ),
+                    )
+
+    def list_artifact_refs(self, job_id: str) -> list[dict[str, Any]]:
+        with closing(self._connect()) as conn:
+            rows = conn.execute(
+                """
+                SELECT * FROM artifact_refs
+                WHERE job_id = ?
+                ORDER BY id
+                """,
+                (job_id,),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def upsert_analysis_experiment_batch(self, batch: dict[str, Any]) -> None:
+        now = utc_now()
+        with closing(self._connect()) as conn:
+            with conn:
+                conn.execute(
+                    """
+                    INSERT INTO analysis_experiment_batches (
+                        batch_id, experiment_id, status, max_concurrency, requested_jobs,
+                        completed_jobs, failed_jobs, job_ids_json, created_at, updated_at
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(batch_id) DO UPDATE SET
+                        status = excluded.status,
+                        completed_jobs = excluded.completed_jobs,
+                        failed_jobs = excluded.failed_jobs,
+                        job_ids_json = excluded.job_ids_json,
+                        updated_at = excluded.updated_at
+                    """,
+                    (
+                        batch["batch_id"],
+                        batch["experiment_id"],
+                        batch["status"],
+                        batch["max_concurrency"],
+                        batch["requested_jobs"],
+                        batch["completed_jobs"],
+                        batch["failed_jobs"],
+                        json.dumps(batch["job_ids"], sort_keys=True),
+                        now,
+                        now,
+                    ),
+                )
+
+    def get_analysis_experiment_batch(self, batch_id: str) -> dict[str, Any] | None:
+        with closing(self._connect()) as conn:
+            row = conn.execute(
+                "SELECT * FROM analysis_experiment_batches WHERE batch_id = ?",
+                (batch_id,),
+            ).fetchone()
+        return self._analysis_batch_row(row) if row else None
+
+    def list_analysis_experiment_batches(self, experiment_id: str) -> list[dict[str, Any]]:
+        with closing(self._connect()) as conn:
+            rows = conn.execute(
+                """
+                SELECT * FROM analysis_experiment_batches
+                WHERE experiment_id = ?
+                ORDER BY created_at DESC
+                """,
+                (experiment_id,),
+            ).fetchall()
+        return [self._analysis_batch_row(row) for row in rows]
 
     def get_job(self, job_id: str) -> dict[str, Any] | None:
         with closing(self._connect()) as conn:
@@ -925,4 +1183,23 @@ class JobStore:
         data["harness_ids"] = json.loads(data.pop("harness_ids_json"))
         data["success_criteria"] = json.loads(data.pop("success_criteria_json"))
         data["tags"] = json.loads(data.pop("tags_json"))
+        return data
+
+    @staticmethod
+    def _cloud_dispatch_row(row: sqlite3.Row) -> dict[str, Any]:
+        data = dict(row)
+        data["request"] = json.loads(data.pop("request_json"))
+        data["response"] = json.loads(data.pop("response_json"))
+        return data
+
+    @staticmethod
+    def _worker_callback_row(row: sqlite3.Row) -> dict[str, Any]:
+        data = dict(row)
+        data["payload"] = json.loads(data.pop("payload_json"))
+        return data
+
+    @staticmethod
+    def _analysis_batch_row(row: sqlite3.Row) -> dict[str, Any]:
+        data = dict(row)
+        data["job_ids"] = json.loads(data.pop("job_ids_json"))
         return data

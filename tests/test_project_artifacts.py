@@ -30,6 +30,7 @@ class ProjectArtifactTests(unittest.TestCase):
         self.assertIn("harness_adapter_result", payload["final_result"]["evidence"])
         self.assertIn("security_profile", payload["final_result"]["evidence"])
         self.assertIn("run_artifact", payload["final_result"]["evidence"])
+        self.assertIn("artifact_refs", payload["final_result"]["evidence"])
         self.assertIn("promotion_decision", payload["final_result"])
 
     def test_demo_local_flow_succeeds(self):

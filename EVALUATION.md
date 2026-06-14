@@ -27,6 +27,11 @@ the deploy boundary when evidence is weak.
 | Analysis lab | Model/agent/harness experiments can be grouped and reported. | `/analysis/cases` and experiment reports classify runs and outcomes. |
 | SLM dataset export | Replay evidence can become redacted train/eval/holdout data. | `/datasets/exports` and `scripts/export_slm_dataset.py` write JSONL splits. |
 | Lab router | New work can be routed from evidence instead of hard-coded defaults. | `/lab/router/recommend` returns a `RoutingDecision`; default `fixed` behavior remains unchanged. |
+| Cloud worker execution | ECS submission is possible only behind explicit env gates. | `/cloud-dispatch-plan` stays dry-run; `/cloud-dispatch` persists submitted or failed dispatch records. |
+| Worker callbacks | Cloud workers can report progress without trusting logs alone. | `/worker-callback` records started, heartbeat, artifact, completed, and failed callbacks. |
+| Artifact storage | Run artifacts have durable refs independent of local file paths. | `/jobs/<id>/artifacts` returns provider, URI, digest, and size. |
+| Experiment batches | Analysis experiments can fan out as bounded batches. | `/analysis/experiments/<id>/batch` records batch status and linked job IDs. |
+| Dataset lineage | SLM exports include split policy, redaction policy, fingerprints, and holdout guardrails. | Dataset manifest lineage marks holdout as evaluation-only. |
 | Safety | Failed tests or policies stop sync/deploy. | Gate failure returns `failed` before mock PR/deploy. |
 | Preview proof | Reviewers get inspectable evidence before deploy. | Final result includes preview URL, preview artifact, and browser-proof checks. |
 | Promotion decision | The run has a clear model/agent verdict. | Final result returns `promote`, `reject`, or `needs_review` with evidence. |
@@ -56,6 +61,10 @@ the deploy boundary when evidence is weak.
 - Analysis experiment score by case.
 - Dataset export counts by split.
 - Router confidence and fallback rate.
+- Cloud dispatch submit success/failure rate.
+- Worker callback heartbeat age.
+- Artifact reference completeness by job.
+- Experiment batch completion/failure counts.
 - Generic Git sync success rate.
 - GitHub App sync success rate.
 - Average changed files per job.
@@ -211,6 +220,33 @@ the deploy boundary when evidence is weak.
     - Expected: cold routing falls back to caller defaults, warm routing uses
       leaderboard evidence, and default `fixed` jobs remain unchanged.
 
+26. Cloud worker submit contract
+    - Configure ECS env and call `/cloud-dispatch-plan`.
+    - Expected: dry-run request contains worker command, callback URL, and lab
+      tuple env.
+    - With `AGENT_CLOUD_ECS_SUBMIT_ENABLED=1`, `/cloud-dispatch` either records
+      a submitted task ARN or a failed dispatch record.
+
+27. Worker callback protocol
+    - Post `started` and `heartbeat` callbacks to `/jobs/<id>/worker-callback`.
+    - Expected: callbacks are listed in order and job events include
+      `worker_callback_received`.
+
+28. Artifact references
+    - Run a successful job and call `/jobs/<id>/artifacts`.
+    - Expected: run artifact, transcript, and diff refs include provider, URI,
+      SHA-256, and byte length.
+
+29. Experiment batch
+    - Run `/analysis/experiments/<id>/batch` with `max_concurrency`.
+    - Expected: batch status, requested/completed/failed counts, and job IDs are
+      persisted and queryable.
+
+30. Dataset lineage
+    - Export a dataset and inspect `manifest.json`.
+    - Expected: manifest includes split policy, redaction policy, source
+      fingerprints, and holdout guard with `use_for_training=false`.
+
 ## Evidence To Show In A Demo
 
 The demo should make these proof points visible without much narration:
@@ -237,6 +273,7 @@ tests_finished
 preview_created
 browser_proof_finished
 run_artifact_created
+worker_callback_received
 policy_gate_result
 branch_pushed
 pr_created_or_updated
@@ -246,7 +283,7 @@ promotion_decision_created
 ```
 
 The service should be considered not production-ready until real deployment
-integration, durable cloud storage, and actual ECS/Fargate worker submission
+integration, durable cloud storage, and verified ECS/Fargate worker operation
 replace the local defaults. The model/agent/harness lab layer records run
 metadata and promotion decisions, and `lab_runs` makes those decisions queryable
 for comparison; the OpenAI Responses path is present but disabled unless

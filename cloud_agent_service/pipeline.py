@@ -24,6 +24,7 @@ from cloud_agent_service.analysis_lab import (
     stable_experiment_id,
 )
 from cloud_agent_service.artifact_schema import RunArtifact, RunArtifactWriter
+from cloud_agent_service.artifact_store import ArtifactStorage
 from cloud_agent_service.dataset_export import SlmDatasetExporter
 from cloud_agent_service.harness_adapters import (
     HarnessAdapterRegistry,
@@ -34,8 +35,10 @@ from cloud_agent_service.lab_router import LabRouter
 from cloud_agent_service.models import (
     AgentPlan,
     AgentSpec,
+    CloudDispatchRecord,
     DatasetExport,
     DeploymentPolicy,
+    ExperimentBatch,
     ExperimentReport,
     ExperimentRun,
     ExperimentSpec,
@@ -55,6 +58,8 @@ from cloud_agent_service.models import (
     RoutingDecision,
     RoutingPolicy,
     RunAnalysis,
+    WorkerCallbackRecord,
+    WorkerCallbackType,
     WorkerJobPayload,
 )
 from cloud_agent_service.security_profiles import HarnessSecurityRegistry
@@ -1127,6 +1132,7 @@ class AgentCloudFlow:
         self.harness_adapters = HarnessAdapterRegistry()
         self.security_profiles = HarnessSecurityRegistry()
         self.run_artifacts = RunArtifactWriter()
+        self.artifact_storage = ArtifactStorage.from_env(self.artifacts_dir)
         self.router = LabRouter()
         self.dataset_exporter = SlmDatasetExporter(store, self.artifacts_dir)
         self.validator = RequestValidator()
@@ -1440,6 +1446,58 @@ class AgentCloudFlow:
         ]
         return build_experiment_report(spec, analyses)
 
+    def run_analysis_experiment_batch(
+        self,
+        experiment_id: str,
+        repo_path: str,
+        deploy_policy: DeploymentPolicy = DeploymentPolicy.PREVIEW_ONLY,
+        max_concurrency: int = 1,
+    ) -> dict[str, Any]:
+        experiment = self.store.get_analysis_experiment(experiment_id)
+        if not experiment:
+            raise RequestValidationError(f"unknown analysis experiment: {experiment_id}")
+        spec = ExperimentSpec(**experiment["spec_json"])
+        requested_jobs = len(spec.model_ids) * len(spec.agent_ids) * len(spec.harness_ids)
+        batch_id = self._experiment_batch_id(experiment_id, repo_path, max_concurrency)
+        self.store.upsert_analysis_experiment_batch(
+            asdict(
+                ExperimentBatch(
+                    batch_id=batch_id,
+                    experiment_id=experiment_id,
+                    status="running",
+                    max_concurrency=max(1, max_concurrency),
+                    requested_jobs=requested_jobs,
+                    completed_jobs=0,
+                    failed_jobs=0,
+                    job_ids=[],
+                )
+            )
+        )
+        run = self.run_analysis_experiment(
+            experiment_id,
+            repo_path=repo_path,
+            deploy_policy=deploy_policy,
+        )
+        failed_jobs = sum(1 for analysis in run.analyses if analysis.job_status != "succeeded")
+        batch = ExperimentBatch(
+            batch_id=batch_id,
+            experiment_id=experiment_id,
+            status="completed" if failed_jobs == 0 else "completed_with_failures",
+            max_concurrency=max(1, max_concurrency),
+            requested_jobs=requested_jobs,
+            completed_jobs=len(run.job_ids) - failed_jobs,
+            failed_jobs=failed_jobs,
+            job_ids=run.job_ids,
+        )
+        self.store.upsert_analysis_experiment_batch(asdict(batch))
+        return {"batch": asdict(batch), "run": asdict(run)}
+
+    def get_analysis_experiment_batch(self, batch_id: str) -> dict[str, Any] | None:
+        return self.store.get_analysis_experiment_batch(batch_id)
+
+    def list_analysis_experiment_batches(self, experiment_id: str) -> list[dict[str, Any]]:
+        return self.store.list_analysis_experiment_batches(experiment_id)
+
     def export_slm_dataset(
         self,
         export_id: str | None = None,
@@ -1457,6 +1515,60 @@ class AgentCloudFlow:
 
     def recommend_route(self, request: JobRequest) -> RoutingDecision:
         return self._routing_decision(request)
+
+    def record_cloud_dispatch(self, dispatch: CloudDispatchRecord) -> None:
+        self.store.upsert_cloud_dispatch(asdict(dispatch))
+        self.store.add_event(
+            dispatch.job_id,
+            "cloud_dispatch_submitted"
+            if dispatch.status.value == "submitted"
+            else "cloud_dispatch_failed",
+            {
+                "dispatch_id": dispatch.dispatch_id,
+                "provider": dispatch.provider,
+                "mode": dispatch.mode,
+                "status": dispatch.status.value,
+                "task_arn": dispatch.task_arn,
+            },
+        )
+
+    def record_worker_callback(
+        self,
+        job_id: str,
+        callback_type: WorkerCallbackType,
+        status: str,
+        payload: dict[str, Any],
+    ) -> WorkerCallbackRecord:
+        if not self.store.get_job(job_id):
+            raise KeyError(f"unknown job_id: {job_id}")
+        record = WorkerCallbackRecord(
+            job_id=job_id,
+            callback_type=callback_type,
+            status=status,
+            payload=payload,
+        )
+        self.store.add_worker_callback(
+            job_id,
+            callback_type.value,
+            status,
+            payload,
+        )
+        self.store.add_event(
+            job_id,
+            "worker_callback_received",
+            {"callback_type": callback_type.value, "status": status, **payload},
+        )
+        if callback_type == WorkerCallbackType.STARTED:
+            self.store.update_job(job_id, status=JobStatus.RUNNING)
+        elif callback_type == WorkerCallbackType.FAILED:
+            self.store.update_job(job_id, status=JobStatus.FAILED)
+        return record
+
+    def list_worker_callbacks(self, job_id: str) -> list[dict[str, Any]]:
+        return self.store.list_worker_callbacks(job_id)
+
+    def list_artifact_refs(self, job_id: str) -> list[dict[str, Any]]:
+        return self.store.list_artifact_refs(job_id)
 
     def run_job(self, job_id: str) -> JobResult:
         job = self.store.get_job(job_id)
@@ -1679,6 +1791,12 @@ class AgentCloudFlow:
                 preview=asdict(preview),
             )
             evidence = self._attach_run_artifact(evidence, run_artifact)
+            artifact_refs = [
+                asdict(ref)
+                for ref in self.artifact_storage.index_run_artifact(job_id, run_artifact)
+            ]
+            self.store.add_artifact_refs(artifact_refs)
+            evidence["artifact_refs"] = artifact_refs
             self.store.add_event(job_id, "preview_created", asdict(preview))
             self.store.add_event(job_id, "browser_proof_finished", preview.checks)
             self.store.add_event(
@@ -2117,6 +2235,15 @@ class AgentCloudFlow:
     def _seed_analysis_cases(self) -> None:
         for case in default_analysis_cases():
             self.store.upsert_analysis_case(analysis_case_to_row(case))
+
+    @staticmethod
+    def _experiment_batch_id(
+        experiment_id: str,
+        repo_path: str,
+        max_concurrency: int,
+    ) -> str:
+        seed = f"{experiment_id}|{repo_path}|{max_concurrency}"
+        return "batch_" + hashlib.sha256(seed.encode("utf-8")).hexdigest()[:16]
 
     def _result(
         self,

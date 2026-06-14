@@ -55,6 +55,20 @@ class RoutingPolicy(StrEnum):
     AUTO_SELECT = "auto_select"
 
 
+class CloudDispatchStatus(StrEnum):
+    PLANNED = "planned"
+    SUBMITTED = "submitted"
+    FAILED = "failed"
+
+
+class WorkerCallbackType(StrEnum):
+    STARTED = "started"
+    HEARTBEAT = "heartbeat"
+    ARTIFACT_UPLOADED = "artifact_uploaded"
+    COMPLETED = "completed"
+    FAILED = "failed"
+
+
 class HarnessCategory(StrEnum):
     CODING_CLI = "coding_cli"
     CLOUD_CODING_AGENT = "cloud_coding_agent"
@@ -168,6 +182,51 @@ class DatasetExport:
     split_paths: dict[str, str]
     counts: dict[str, int]
     source_job_ids: list[str]
+    lineage: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class ExperimentBatch:
+    batch_id: str
+    experiment_id: str
+    status: str
+    max_concurrency: int
+    requested_jobs: int
+    completed_jobs: int
+    failed_jobs: int
+    job_ids: list[str]
+
+
+@dataclass(frozen=True)
+class CloudDispatchRecord:
+    dispatch_id: str
+    job_id: str
+    provider: str
+    mode: str
+    status: CloudDispatchStatus
+    task_arn: str | None
+    region: str
+    request: dict[str, Any]
+    response: dict[str, Any]
+
+
+@dataclass(frozen=True)
+class WorkerCallbackRecord:
+    job_id: str
+    callback_type: WorkerCallbackType
+    status: str
+    payload: dict[str, Any]
+
+
+@dataclass(frozen=True)
+class ArtifactReference:
+    job_id: str
+    artifact_type: str
+    provider: str
+    uri: str
+    path: str
+    sha256: str
+    bytes: int
 
 
 @dataclass(frozen=True)

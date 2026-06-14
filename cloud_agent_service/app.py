@@ -18,6 +18,7 @@ from cloud_agent_service.models import (
     PromotionStatus,
     RepoProvider,
     RoutingPolicy,
+    WorkerCallbackType,
 )
 from cloud_agent_service.orchestrator import LocalJobQueue, LocalOrchestrator
 from cloud_agent_service.pipeline import AgentCloudFlow, RequestValidationError
@@ -61,6 +62,10 @@ class RunExperimentPayload(BaseModel):
     deploy_policy: DeploymentPolicy = DeploymentPolicy.PREVIEW_ONLY
 
 
+class RunExperimentBatchPayload(RunExperimentPayload):
+    max_concurrency: int = 1
+
+
 class DatasetExportPayload(BaseModel):
     export_id: str | None = None
     limit: int = 200
@@ -78,6 +83,12 @@ class RouterRecommendPayload(BaseModel):
     harness_id: str = "local-template"
     deploy_policy: DeploymentPolicy = DeploymentPolicy.MANUAL
     routing_policy: RoutingPolicy = RoutingPolicy.RECOMMEND_ONLY
+
+
+class WorkerCallbackPayload(BaseModel):
+    callback_type: WorkerCallbackType
+    status: str = "ok"
+    payload: dict[str, Any] = Field(default_factory=dict)
 
 
 def build_flow() -> AgentCloudFlow:
@@ -197,6 +208,35 @@ def run_analysis_experiment(
         )
     except RequestValidationError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/analysis/experiments/{experiment_id}/batch")
+def run_analysis_experiment_batch(
+    experiment_id: str,
+    payload: RunExperimentBatchPayload,
+) -> dict[str, Any]:
+    try:
+        return flow.run_analysis_experiment_batch(
+            experiment_id,
+            repo_path=payload.repo_path,
+            deploy_policy=payload.deploy_policy,
+            max_concurrency=payload.max_concurrency,
+        )
+    except RequestValidationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.get("/analysis/experiments/{experiment_id}/batches")
+def list_analysis_experiment_batches(experiment_id: str) -> dict[str, Any]:
+    return {"batches": flow.list_analysis_experiment_batches(experiment_id)}
+
+
+@app.get("/analysis/batches/{batch_id}")
+def get_analysis_experiment_batch(batch_id: str) -> dict[str, Any]:
+    batch = flow.get_analysis_experiment_batch(batch_id)
+    if not batch:
+        raise HTTPException(status_code=404, detail="analysis batch not found")
+    return batch
 
 
 @app.get("/analysis/experiments/{experiment_id}/report")
@@ -350,7 +390,7 @@ def run_job(job_id: str) -> dict[str, Any]:
 @app.get("/jobs/{job_id}/worker-payload")
 def get_worker_payload(job_id: str) -> dict[str, Any]:
     try:
-        payload = flow.build_worker_payload(job_id, status_callback_url="local://jobs")
+        payload = flow.build_worker_payload(job_id, status_callback_url=_worker_callback_base())
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="job not found") from exc
     return asdict(payload)
@@ -359,12 +399,61 @@ def get_worker_payload(job_id: str) -> dict[str, Any]:
 @app.get("/jobs/{job_id}/cloud-dispatch-plan")
 def get_cloud_dispatch_plan(job_id: str) -> dict[str, Any]:
     try:
-        payload = flow.build_worker_payload(job_id, status_callback_url="local://jobs")
+        payload = flow.build_worker_payload(job_id, status_callback_url=_worker_callback_base())
         return ecs_dispatch_planner.build_run_task_request(payload)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="job not found") from exc
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@app.post("/jobs/{job_id}/cloud-dispatch")
+def submit_cloud_dispatch(job_id: str) -> dict[str, Any]:
+    try:
+        payload = flow.build_worker_payload(job_id, status_callback_url=_worker_callback_base())
+        dispatch = ecs_dispatch_planner.submit_run_task(payload)
+        flow.record_cloud_dispatch(dispatch)
+        return asdict(dispatch)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="job not found") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@app.get("/jobs/{job_id}/cloud-dispatches")
+def list_cloud_dispatches(job_id: str) -> dict[str, Any]:
+    if not flow.store.get_job(job_id):
+        raise HTTPException(status_code=404, detail="job not found")
+    return {"dispatches": flow.store.list_cloud_dispatches(job_id=job_id)}
+
+
+@app.post("/jobs/{job_id}/worker-callback")
+def post_worker_callback(job_id: str, payload: WorkerCallbackPayload) -> dict[str, Any]:
+    try:
+        return asdict(
+            flow.record_worker_callback(
+                job_id,
+                callback_type=payload.callback_type,
+                status=payload.status,
+                payload=payload.payload,
+            )
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="job not found") from exc
+
+
+@app.get("/jobs/{job_id}/worker-callbacks")
+def list_worker_callbacks(job_id: str) -> dict[str, Any]:
+    if not flow.store.get_job(job_id):
+        raise HTTPException(status_code=404, detail="job not found")
+    return {"callbacks": flow.list_worker_callbacks(job_id)}
+
+
+@app.get("/jobs/{job_id}/artifacts")
+def list_job_artifacts(job_id: str) -> dict[str, Any]:
+    if not flow.store.get_job(job_id):
+        raise HTTPException(status_code=404, detail="job not found")
+    return {"artifacts": flow.list_artifact_refs(job_id)}
 
 
 @app.post("/jobs/{job_id}/cancel")
@@ -480,6 +569,10 @@ def _user_token_quota() -> int | None:
     return quota if quota > 0 else None
 
 
+def _worker_callback_base() -> str:
+    return os.environ.get("AGENT_CLOUD_STATUS_CALLBACK_URL", "local://jobs").strip() or "local://jobs"
+
+
 def _enforce_user_quota(request: JobRequest) -> None:
     quota = _user_token_quota()
     if quota is None:
@@ -518,15 +611,28 @@ def _lab_dashboard_html() -> str:
     }
     .metric { border: 1px solid #d8dadd; border-radius: 8px; padding: 14px; background: #ffffff; }
     .metric strong { display: block; font-size: 26px; margin-bottom: 4px; }
-    .toolbar { display: flex; gap: 8px; align-items: center; }
-    button {
+    .toolbar, .inline { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+    button, input {
       border: 1px solid #171717;
-      background: #171717;
-      color: #ffffff;
       border-radius: 6px;
       padding: 8px 12px;
+    }
+    button {
+      background: #171717;
+      color: #ffffff;
       cursor: pointer;
     }
+    input { min-width: min(100%, 360px); background: #ffffff; color: #171717; }
+    .panel {
+      border: 1px solid #d8dadd;
+      border-radius: 8px;
+      padding: 14px;
+      background: #ffffff;
+      margin-top: 12px;
+    }
+    .panel h2 { margin-top: 0; }
+    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 12px; }
+    pre { white-space: pre-wrap; overflow-wrap: anywhere; margin: 8px 0 0; font-size: 12px; }
     table {
       width: 100%;
       border-collapse: collapse;
@@ -549,10 +655,11 @@ def _lab_dashboard_html() -> str:
     .needs_review { color: #7a4a00; }
     @media (prefers-color-scheme: dark) {
       body { background: #141414; color: #f4f4f5; }
-      .metric, table { background: #1e1e1d; border-color: #3b3833; }
+      .metric, .panel, table { background: #1e1e1d; border-color: #3b3833; }
       th { background: #2a2824; }
       th, td { border-color: #34312c; }
       button { border-color: #f4f4f5; background: #f4f4f5; color: #141414; }
+      input { background: #141414; color: #f4f4f5; border-color: #f4f4f5; }
     }
   </style>
 </head>
@@ -567,6 +674,39 @@ def _lab_dashboard_html() -> str:
       </div>
     </header>
     <section class="summary" id="summary"></section>
+    <section class="grid">
+      <div class="panel">
+        <h2>Cloud Worker</h2>
+        <pre id="cloud"></pre>
+      </div>
+      <div class="panel">
+        <h2>Router Recommendation</h2>
+        <div class="inline">
+          <input id="routerPrompt" value="For my shopping website, create a buy button.">
+          <button type="button" id="recommend">Recommend</button>
+        </div>
+        <pre id="route"></pre>
+      </div>
+      <div class="panel">
+        <h2>Dataset Export</h2>
+        <button type="button" id="exportDataset">Export</button>
+        <pre id="dataset"></pre>
+      </div>
+    </section>
+    <section>
+      <h2>Analysis Cases</h2>
+      <table>
+        <thead>
+          <tr>
+            <th>Case</th>
+            <th>Category</th>
+            <th>Models</th>
+            <th>Harnesses</th>
+          </tr>
+        </thead>
+        <tbody id="cases"></tbody>
+      </table>
+    </section>
     <section>
       <h2>Leaderboard</h2>
       <table>
@@ -621,6 +761,10 @@ def _lab_dashboard_html() -> str:
         fetch('/lab/leaderboard').then((response) => response.json()),
         fetch('/lab/runs?limit=50').then((response) => response.json())
       ]);
+      const [cloud, cases] = await Promise.all([
+        fetch('/integrations/cloud/status').then((response) => response.json()),
+        fetch('/analysis/cases').then((response) => response.json())
+      ]);
       const statuses = summary.by_promotion_status || {};
       document.getElementById('summary').innerHTML = [
         ['Total', summary.total_runs || 0],
@@ -630,6 +774,15 @@ def _lab_dashboard_html() -> str:
       ].map(([label, value]) =>
         `<div class="metric"><strong>${escapeHtml(value)}</strong>${escapeHtml(label)}</div>`
       ).join('');
+      document.getElementById('cloud').textContent = JSON.stringify(cloud, null, 2);
+      document.getElementById('cases').innerHTML = (cases.cases || []).map((row) => `
+        <tr>
+          <td>${escapeHtml(row.case_id)}</td>
+          <td>${escapeHtml(row.category)}</td>
+          <td>${escapeHtml((row.model_ids || []).join(', '))}</td>
+          <td>${escapeHtml((row.harness_ids || []).join(', '))}</td>
+        </tr>
+      `).join('');
       document.getElementById('leaderboard').innerHTML =
         (leaderboard.leaderboard || []).map((row) => `
         <tr>
@@ -659,6 +812,27 @@ def _lab_dashboard_html() -> str:
       `).join('');
     }
     document.getElementById('refresh').addEventListener('click', loadLab);
+    document.getElementById('recommend').addEventListener('click', async () => {
+      const response = await fetch('/lab/router/recommend', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          prompt: document.getElementById('routerPrompt').value,
+          routing_policy: 'recommend_only'
+        })
+      });
+      document.getElementById('route').textContent =
+        JSON.stringify(await response.json(), null, 2);
+    });
+    document.getElementById('exportDataset').addEventListener('click', async () => {
+      const response = await fetch('/datasets/exports', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ limit: 50 })
+      });
+      document.getElementById('dataset').textContent =
+        JSON.stringify(await response.json(), null, 2);
+    });
     loadLab();
   </script>
 </body>

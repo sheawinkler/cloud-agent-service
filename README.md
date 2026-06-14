@@ -10,17 +10,19 @@ AWS/Git rollout: durable queue claiming, worker payloads, budget ledger, event
 streaming, repo profiling, repo memory, model/agent run metadata, approval
 gates, continuation, lab-run summaries, task-suite evaluation, optional
 API-key/usage controls, a ranked harness index with a top-20 slice, and an ECS
-dry-run dispatch contract. The next productized layer adds a harness adapter
+dispatch contract. The next productized layer adds a harness adapter
 ABI, per-harness security profiles, replayable run artifacts, a task corpus,
 and a model/agent/harness leaderboard.
 The current layer adds analysis cases, experiment reports, redacted SLM dataset
 exports, and a leaderboard-backed router for Language Model Lab comparisons.
+It also adds an env-gated ECS submit path, worker callbacks, artifact storage
+references, experiment batches, dataset lineage, and a denser lab dashboard.
 
 Local repo jobs still use mock PR and deployment artifacts. Generic Git jobs
 clone from `git_url` and push an agent branch back to `origin`. GitHub repo jobs
 are a specialization that use a GitHub App installation token and create or
-reuse a pull request. The MVP does not create AWS resources or perform
-production deployment.
+reuse a pull request. The MVP creates AWS resources only through the env-gated
+ECS submit endpoint and does not perform production deployment.
 
 The Mirendil-facing framing is that a repo update is also a minimal Language
 Model Lab run: a `ModelSpec` plus `AgentSpec` plus `HarnessSpec` executes a
@@ -73,8 +75,11 @@ Monitoring:
   mock.
 - `store.py`: SQLite job and event persistence.
 - `orchestrator.py`: local in-memory queue plus persisted queued-job runner.
-- `worker.py`: container-friendly single-job or claim-next entry point.
-- `cloud_dispatch.py`: AWS ECS/Fargate dry-run dispatch request builder.
+- `worker.py`: container-friendly single-job or claim-next entry point with
+  optional HTTP worker callbacks.
+- `cloud_dispatch.py`: AWS ECS/Fargate dry-run request builder and env-gated
+  live submitter.
+- `artifact_store.py`: local/S3 artifact-reference indexing.
 - `harness_registry.py`: curated agent harness index, top-20 slice, and custom
   harness contract support.
 - `harness_adapters.py`: adapter ABI plus deterministic local and opt-in Pi
@@ -124,6 +129,9 @@ Monitoring:
 19. Run named analysis cases and experiment reports.
 20. Export replay evidence into redacted SLM train/eval/holdout JSONL splits.
 21. Recommend or auto-select lab tuples through an evidence-backed router.
+22. Submit ECS worker tasks only behind explicit live-submit env flags.
+23. Track worker callbacks and artifact references for cloud execution evidence.
+24. Run experiment batches and preserve dataset lineage/holdout guardrails.
 
 ## Model And Agent Lab Layer
 
@@ -207,6 +215,23 @@ The router supports `fixed`, `recommend_only`, and `auto_select`. `fixed` is
 the default and preserves existing behavior. `recommend_only` returns a decision
 without changing the job. `auto_select` applies the best leaderboard-backed
 model/agent/harness tuple before validation.
+
+Dataset manifests include split policy, redaction policy, source fingerprints,
+and a holdout guard that marks holdout rows as evaluation-only.
+
+## Cloud Worker Execution
+
+`GET /jobs/<job_id>/cloud-dispatch-plan` remains a dry-run ECS request shape.
+`POST /jobs/<job_id>/cloud-dispatch` attempts a real ECS `run_task` only when
+`AGENT_CLOUD_ECS_SUBMIT_ENABLED=1` and the required ECS env vars are present.
+Set `AGENT_CLOUD_STATUS_CALLBACK_URL` to the externally reachable API `/jobs`
+base before live submission so workers receive a callback URL like
+`https://api.example.com/jobs/<job_id>`.
+
+Workers can post progress to `/jobs/<job_id>/worker-callback`. The worker CLI
+uses `AGENT_CLOUD_STATUS_CALLBACK_URL` when it is an HTTP URL and silently
+skips callbacks for local URLs. Completed run artifacts are indexed through the
+artifact storage abstraction and exposed at `/jobs/<job_id>/artifacts`.
 
 ## Simple Demo
 
@@ -306,6 +331,8 @@ curl -sS http://127.0.0.1:8000/datasets/exports/<export_id>
 curl -X POST http://127.0.0.1:8000/lab/router/recommend \
   -H 'content-type: application/json' \
   -d '{"prompt":"For my shopping website, create a buy button."}'
+curl -sS http://127.0.0.1:8000/jobs/<job_id>/artifacts
+curl -sS http://127.0.0.1:8000/jobs/<job_id>/worker-callbacks
 open http://127.0.0.1:8000/lab
 curl -sS http://127.0.0.1:8000/models
 curl -sS http://127.0.0.1:8000/harnesses
@@ -322,6 +349,13 @@ Inspect the dry-run ECS request shape. This does not call AWS:
 ```bash
 curl -sS http://127.0.0.1:8000/integrations/cloud/status
 curl -sS http://127.0.0.1:8000/jobs/<job_id>/cloud-dispatch-plan
+```
+
+Submit to ECS only when live submit is explicitly enabled:
+
+```bash
+AGENT_CLOUD_ECS_SUBMIT_ENABLED=1 \
+curl -X POST http://127.0.0.1:8000/jobs/<job_id>/cloud-dispatch
 ```
 
 Run the next persisted queued job without relying on the API process memory:
