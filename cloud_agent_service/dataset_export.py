@@ -39,6 +39,7 @@ class SlmDatasetExporter:
         export_dir.mkdir(parents=True, exist_ok=True)
         records_by_split: dict[str, list[dict[str, Any]]] = {split: [] for split in SPLITS}
         source_job_ids: list[str] = []
+        source_fingerprints: dict[str, dict[str, Any]] = {}
         for run in self.store.list_lab_runs(
             limit=limit,
             promotion_status=promotion_status,
@@ -52,8 +53,12 @@ class SlmDatasetExporter:
                 continue
             record = self._record_from_result(job, result)
             split = self._split_for_job(result.job_id)
+            record["dataset_split"] = split
             records_by_split[split].append(record)
             source_job_ids.append(result.job_id)
+            source_fingerprints[result.job_id] = self._artifact_fingerprint(
+                Path(artifact.get("artifact_path", ""))
+            )
 
         split_paths: dict[str, str] = {}
         counts: dict[str, int] = {}
@@ -72,6 +77,20 @@ class SlmDatasetExporter:
             split_paths=split_paths,
             counts=counts,
             source_job_ids=source_job_ids,
+            lineage={
+                "schema_version": self.schema_version,
+                "split_policy": "sha256(job_id) bucket: train<80 eval<90 holdout>=90",
+                "redaction_policy": {
+                    "absolute_paths": ABSOLUTE_PATH_RE.pattern,
+                    "secret_patterns": GENERIC_SECRET_RE.pattern,
+                },
+                "holdout_guard": {
+                    "holdout_split": "holdout",
+                    "use_for_training": False,
+                    "reason": "Reserved for SLM candidate evaluation and leakage checks.",
+                },
+                "source_fingerprints": source_fingerprints,
+            },
         )
         manifest_path.write_text(
             json.dumps(asdict(manifest), indent=2, sort_keys=True),
@@ -110,6 +129,9 @@ class SlmDatasetExporter:
             "run_artifact_complete": artifact.get("complete") is True,
             "transcript_excerpt": transcript,
             "diff_fingerprint": diff_fingerprint,
+            "source_run_artifact": self._artifact_fingerprint(
+                Path(artifact.get("artifact_path", ""))
+            ),
         }
 
     def _redact_json(self, value: Any) -> Any:
@@ -156,6 +178,17 @@ class SlmDatasetExporter:
 
     @staticmethod
     def _diff_fingerprint(path: Path) -> dict[str, Any]:
+        if not path.exists() or not path.is_file():
+            return {"available": False, "sha256": None, "bytes": 0}
+        data = path.read_bytes()
+        return {
+            "available": True,
+            "sha256": hashlib.sha256(data).hexdigest(),
+            "bytes": len(data),
+        }
+
+    @staticmethod
+    def _artifact_fingerprint(path: Path) -> dict[str, Any]:
         if not path.exists() or not path.is_file():
             return {"available": False, "sha256": None, "bytes": 0}
         data = path.read_bytes()

@@ -155,7 +155,8 @@
       "evidence": "dict[str, object]",
       "promotion_decision": "dict[str, object]",
       "harness_adapter_result": "dict[str, object]",
-      "run_artifact": "dict[str, object]"
+      "run_artifact": "dict[str, object]",
+      "artifact_refs": "list[dict[str, object]]"
     }
   },
   "budget_ledger_example": [
@@ -321,6 +322,35 @@
         "diff_path": "artifacts/runs/demo-job-001/diff.patch",
         "complete": true
       },
+      "artifact_refs": [
+        {
+          "job_id": "demo-job-001",
+          "artifact_type": "run_artifact",
+          "provider": "local",
+          "uri": "local://artifacts/runs/demo-job-001/run-artifact.json",
+          "path": "artifacts/runs/demo-job-001/run-artifact.json",
+          "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+          "bytes": 1024
+        },
+        {
+          "job_id": "demo-job-001",
+          "artifact_type": "transcript",
+          "provider": "local",
+          "uri": "local://artifacts/runs/demo-job-001/transcript.txt",
+          "path": "artifacts/runs/demo-job-001/transcript.txt",
+          "sha256": "1111111111111111111111111111111111111111111111111111111111111111",
+          "bytes": 128
+        },
+        {
+          "job_id": "demo-job-001",
+          "artifact_type": "diff",
+          "provider": "local",
+          "uri": "local://artifacts/runs/demo-job-001/diff.patch",
+          "path": "artifacts/runs/demo-job-001/diff.patch",
+          "sha256": "2222222222222222222222222222222222222222222222222222222222222222",
+          "bytes": 256
+        }
+      ],
       "repo_profile": {
         "package_manager": null,
         "framework": "html",

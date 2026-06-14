@@ -87,7 +87,9 @@ def run_smoke(base_url: str, repo_path: str) -> dict[str, Any]:
     record(
         results,
         "cloud_status",
-        cloud["provider"] == "aws-ecs" and "configured" in cloud,
+        cloud["provider"] == "aws-ecs"
+        and "configured" in cloud
+        and "submit_enabled" in cloud,
         response=cloud,
     )
 
@@ -205,6 +207,21 @@ def run_smoke(base_url: str, repo_path: str) -> dict[str, Any]:
         max_changed_files=payload["max_changed_files"],
     )
 
+    callback = client.post(
+        f"/jobs/{job_id}/worker-callback",
+        {
+            "callback_type": "started",
+            "status": "running",
+            "payload": {"smoke": True},
+        },
+    )
+    record(
+        results,
+        "worker_callback_started",
+        callback["callback_type"] == "started" and callback["status"] == "running",
+        callback=callback,
+    )
+
     run = client.post(f"/jobs/{job_id}/run")
     record(
         results,
@@ -224,6 +241,23 @@ def run_smoke(base_url: str, repo_path: str) -> dict[str, Any]:
         budget["tokens_used"] > 0 and len(budget["entries"]) >= 1,
         tokens_used=budget["tokens_used"],
         entries=len(budget["entries"]),
+    )
+
+    callbacks = client.get(f"/jobs/{job_id}/worker-callbacks")
+    record(
+        results,
+        "worker_callbacks",
+        any(item["callback_type"] == "started" for item in callbacks["callbacks"]),
+        callbacks=len(callbacks["callbacks"]),
+    )
+
+    artifacts = client.get(f"/jobs/{job_id}/artifacts")
+    record(
+        results,
+        "artifact_refs",
+        len(artifacts["artifacts"]) >= 3
+        and all(item["provider"] == "local" for item in artifacts["artifacts"]),
+        artifacts=len(artifacts["artifacts"]),
     )
 
     events = client.get(f"/jobs/{job_id}/events")
@@ -295,7 +329,11 @@ def run_smoke(base_url: str, repo_path: str) -> dict[str, Any]:
     record(
         results,
         "lab_ui",
-        "<title>Agent Lab</title>" in lab_ui and "Recent Runs" in lab_ui,
+        "<title>Agent Lab</title>" in lab_ui
+        and "Recent Runs" in lab_ui
+        and "Cloud Worker" in lab_ui
+        and "Analysis Cases" in lab_ui
+        and "Dataset Export" in lab_ui,
         length=len(lab_ui),
     )
 
@@ -333,6 +371,25 @@ def run_smoke(base_url: str, repo_path: str) -> dict[str, Any]:
         statuses=report["by_promotion_status"],
     )
 
+    batch = client.post(
+        f"/analysis/experiments/{experiment['experiment_id']}/batch",
+        {
+            "repo_path": repo_path,
+            "deploy_policy": "preview_only",
+            "max_concurrency": 2,
+        },
+    )
+    batch_get = client.get(f"/analysis/batches/{batch['batch']['batch_id']}")
+    record(
+        results,
+        "analysis_experiment_batch",
+        batch["batch"]["status"] == "completed"
+        and batch_get["batch_id"] == batch["batch"]["batch_id"]
+        and batch["batch"]["max_concurrency"] == 2,
+        batch_id=batch["batch"]["batch_id"],
+        jobs=len(batch["batch"]["job_ids"]),
+    )
+
     dataset = client.post(
         "/datasets/exports",
         {
@@ -346,7 +403,8 @@ def run_smoke(base_url: str, repo_path: str) -> dict[str, Any]:
         "dataset_export",
         sum(dataset["counts"].values()) >= 1
         and dataset_get["export_id"] == dataset["export_id"]
-        and {"train", "eval", "holdout"}.issubset(set(dataset["split_paths"])),
+        and {"train", "eval", "holdout"}.issubset(set(dataset["split_paths"]))
+        and dataset_get["lineage"]["holdout_guard"]["use_for_training"] is False,
         export_id=dataset["export_id"],
         counts=dataset["counts"],
     )

@@ -9,19 +9,21 @@ evidence, and syncs review output through local mock, generic Git, or GitHub App
 paths.
 Terminal runs are indexed in `lab_runs` so model/agent/harness promotion
 outcomes can be queried and summarized.
-Task suites, runtime status, optional auth/quotas, a lab UI, and ECS dry-run
-dispatch plans are present as productization scaffolding. The harness registry
+Task suites, runtime status, optional auth/quotas, a lab UI, ECS dry-run
+dispatch plans, and env-gated ECS submit are present as productization scaffolding. The harness registry
 pre-indexes current agent harnesses, exposes a top_20 slice, and accepts
 `custom:<name>` harness IDs as dispatch contracts.
 Harness execution goes through an adapter ABI, attaches a per-harness security
 profile, writes replayable run artifacts, and feeds a model/agent/harness
 leaderboard.
-Analysis cases, experiment reports, SLM dataset export, and router decisions
-turn the control loop into a small Language Model Lab surface.
+Analysis cases, experiment reports, SLM dataset export, router decisions,
+worker callbacks, artifact refs, experiment batches, and dataset lineage turn
+the control loop into a small Language Model Lab surface.
 
 Important boundary:
-The current implementation does not call AWS and does not perform a real
-deployment. Local PR and deployment outputs are artifacts used to prove the
+The current implementation calls AWS only through `/jobs/<job_id>/cloud-dispatch`
+when `AGENT_CLOUD_ECS_SUBMIT_ENABLED=1` and ECS env is configured. It does not
+perform a real deployment. Local PR and deployment outputs are artifacts used to prove the
 control flow. Generic Git jobs push review branches to origin. GitHub App jobs
 require app credentials before claiming live clone/push/PR behavior.
 OpenAI Responses-backed agent runs require explicit enablement and an API key;
@@ -44,8 +46,10 @@ Primary files:
 - pipeline.py: end-to-end application flow.
 - store.py: SQLite job and event storage.
 - orchestrator.py: local queue and runner.
-- worker.py: one-job container entry point.
-- cloud_dispatch.py: ECS/Fargate dry-run dispatch request builder.
+- worker.py: one-job container entry point with optional HTTP callbacks.
+- cloud_dispatch.py: ECS/Fargate dry-run dispatch request builder and env-gated
+  live submitter.
+- artifact_store.py: local/S3 artifact reference indexing.
 - harness_registry.py: ranked agent harness index, top_20 slice, and custom
   harness contracts.
 - harness_adapters.py: adapter ABI plus local-template and opt-in Pi adapters.
@@ -85,6 +89,8 @@ Monitor commands:
 - curl -sS http://127.0.0.1:8000/tasks/corpus
 - curl -sS http://127.0.0.1:8000/analysis/cases
 - curl -sS http://127.0.0.1:8000/datasets/exports/<export_id>
+- curl -sS http://127.0.0.1:8000/jobs/<job_id>/artifacts
+- curl -sS http://127.0.0.1:8000/jobs/<job_id>/worker-callbacks
 - curl -sS http://127.0.0.1:8000/models
 - curl -sS http://127.0.0.1:8000/harnesses
 - curl -sS http://127.0.0.1:8000/integrations/cloud/status
@@ -105,12 +111,16 @@ Expected successful flow:
 13. Sync review output and return final status plus promotion decision.
 14. Index the terminal run for lab summary, task-suite comparison, analysis
     reports, dataset export, and router recommendations.
+15. Index artifact references and accept worker callbacks when a cloud worker
+    posts them.
 
 Do not:
 - Treat mock PR URLs as real GitHub PRs.
 - Treat local-deterministic as live external model inference.
 - Treat local deployment artifacts as production deploys.
 - Treat ECS dispatch plans as submitted AWS tasks.
+- Treat ECS submit as live unless `AGENT_CLOUD_ECS_SUBMIT_ENABLED=1` and the
+  submit endpoint returned a submitted dispatch.
 - Treat indexed harness IDs as live adapter execution without worker proof.
 - Commit runtime SQLite databases, generated workspaces, or artifacts.
 - Add package dependencies without updating the allowlist and tests.
@@ -132,3 +142,6 @@ Useful API reads:
 - GET /auth/status
 - GET /users/<user_id>/quota
 - GET /jobs/<job_id>/cloud-dispatch-plan
+- POST /jobs/<job_id>/cloud-dispatch
+- POST /jobs/<job_id>/worker-callback
+- GET /jobs/<job_id>/artifacts

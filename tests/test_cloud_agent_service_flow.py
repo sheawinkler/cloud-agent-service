@@ -10,11 +10,13 @@ from cloud_agent_service.cloud_dispatch import EcsDispatchPlanner
 from cloud_agent_service.dataset_export import SlmDatasetExporter
 from cloud_agent_service.harness_registry import HarnessRegistry
 from cloud_agent_service.models import (
+    CloudDispatchStatus,
     DeploymentPolicy,
     JobRequest,
     JobStatus,
     RepoProvider,
     RoutingPolicy,
+    WorkerCallbackType,
 )
 from cloud_agent_service.pipeline import (
     AgentCloudFlow,
@@ -157,6 +159,9 @@ class CloudAgentServiceFlowTests(unittest.TestCase):
             self.assertTrue(Path(result.evidence["run_artifact"]["artifact_path"]).exists())
             self.assertTrue(Path(result.evidence["run_artifact"]["transcript_path"]).exists())
             self.assertTrue(Path(result.evidence["run_artifact"]["diff_path"]).exists())
+            self.assertEqual(3, len(result.evidence["artifact_refs"]))
+            self.assertEqual(3, len(flow.store.list_artifact_refs(job_id)))
+            self.assertEqual("local", result.evidence["artifact_refs"][0]["provider"])
             self.assertGreater(flow.store.budget_tokens_used(job_id), 0)
             lab_run = flow.store.get_lab_run(job_id)
             self.assertEqual("local-deterministic", lab_run["model_id"])
@@ -241,6 +246,7 @@ class CloudAgentServiceFlowTests(unittest.TestCase):
             self.assertEqual(1234, payload.token_budget)
             self.assertEqual(77, payload.max_runtime_seconds)
             self.assertEqual(1, payload.max_changed_files)
+            self.assertEqual(f"local://jobs/{job_id}", payload.status_callback_url)
             self.assertEqual(RoutingPolicy.FIXED, payload.routing_policy)
             self.assertEqual("fixed", payload.routing_decision["routing_policy"])
             self.assertEqual("local-deterministic", payload.model_id)
@@ -307,7 +313,38 @@ class CloudAgentServiceFlowTests(unittest.TestCase):
                 )
             self.assertEqual(1, len(records))
             self.assertEqual("slm-dataset.v1", records[0]["schema_version"])
+            self.assertIn(records[0]["dataset_split"], {"train", "eval", "holdout"})
+            self.assertIn("source_run_artifact", records[0])
+            self.assertFalse(export.lineage["holdout_guard"]["use_for_training"])
+            self.assertIn("source_fingerprints", export.lineage)
             self.assertNotIn(str(root), json.dumps(records[0], sort_keys=True))
+
+    def test_analysis_experiment_batch_records_status(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = self._build_repo(root)
+            flow = self._build_flow(root)
+            spec = flow.create_analysis_experiment(
+                case_id="model_bakeoff_repo_edit",
+                name="batch smoke",
+            )
+
+            batch_result = flow.run_analysis_experiment_batch(
+                spec.experiment_id,
+                repo_path=str(repo),
+                deploy_policy=DeploymentPolicy.PREVIEW_ONLY,
+                max_concurrency=2,
+            )
+
+            batch = batch_result["batch"]
+            self.assertEqual(spec.experiment_id, batch["experiment_id"])
+            self.assertEqual("completed", batch["status"])
+            self.assertEqual(2, batch["max_concurrency"])
+            self.assertEqual(1, batch["requested_jobs"])
+            self.assertEqual(1, batch["completed_jobs"])
+            stored = flow.get_analysis_experiment_batch(batch["batch_id"])
+            self.assertEqual(batch["batch_id"], stored["batch_id"])
+            self.assertEqual(batch["job_ids"], stored["job_ids"])
 
     def test_unknown_analysis_case_and_empty_dataset_export(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -926,7 +963,10 @@ class CloudAgentServiceFlowTests(unittest.TestCase):
                     repo_path=str(repo),
                 )
             )
-            payload = flow.build_worker_payload(job_id)
+            payload = flow.build_worker_payload(
+                job_id,
+                status_callback_url="https://api.example.com/jobs",
+            )
 
             plan = EcsDispatchPlanner().build_run_task_request(payload)
 
@@ -942,6 +982,82 @@ class CloudAgentServiceFlowTests(unittest.TestCase):
             self.assertEqual("worker", container["name"])
             self.assertIn("--job-id", container["command"])
             self.assertEqual("local-template", env["AGENT_CLOUD_HARNESS_ID"])
+            self.assertEqual(
+                f"https://api.example.com/jobs/{job_id}",
+                env["AGENT_CLOUD_STATUS_CALLBACK_URL"],
+            )
+
+    def test_cloud_dispatch_submit_is_env_gated_and_persisted(self):
+        class FakeEcsClient:
+            def run_task(self, **request):
+                self.request = request
+                return {
+                    "tasks": [{"taskArn": "arn:aws:ecs:us-west-2:123:task/abc"}],
+                    "failures": [],
+                    "ResponseMetadata": {"HTTPStatusCode": 200},
+                }
+
+        with tempfile.TemporaryDirectory() as tmp, patch.dict(
+            "os.environ",
+            {
+                "AGENT_CLOUD_ECS_CLUSTER": "agent-cluster",
+                "AGENT_CLOUD_ECS_TASK_DEFINITION": "agent-task:1",
+                "AGENT_CLOUD_ECS_SUBNETS": "subnet-a,subnet-b",
+                "AGENT_CLOUD_ECS_SUBMIT_ENABLED": "1",
+                "AWS_REGION": "us-west-2",
+            },
+        ):
+            root = Path(tmp)
+            repo = self._build_repo(root)
+            flow = self._build_flow(root)
+            job_id = flow.create_job(
+                JobRequest(
+                    prompt="For my shopping website, create a buy button.",
+                    repo_path=str(repo),
+                )
+            )
+            payload = flow.build_worker_payload(job_id)
+            fake_client = FakeEcsClient()
+
+            dispatch = EcsDispatchPlanner().submit_run_task(payload, ecs_client=fake_client)
+            flow.record_cloud_dispatch(dispatch)
+
+            self.assertEqual(CloudDispatchStatus.SUBMITTED, dispatch.status)
+            self.assertEqual("arn:aws:ecs:us-west-2:123:task/abc", dispatch.task_arn)
+            self.assertEqual("agent-cluster", fake_client.request["cluster"])
+            stored = flow.store.get_cloud_dispatch(dispatch.dispatch_id)
+            self.assertEqual("submitted", stored["status"])
+            self.assertEqual(job_id, stored["job_id"])
+
+    def test_worker_callback_protocol_records_progress(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = self._build_repo(root)
+            flow = self._build_flow(root)
+            job_id = flow.create_job(
+                JobRequest(
+                    prompt="For my shopping website, create a buy button.",
+                    repo_path=str(repo),
+                )
+            )
+
+            flow.record_worker_callback(
+                job_id,
+                WorkerCallbackType.STARTED,
+                "running",
+                {"task_arn": "arn:task/test"},
+            )
+            flow.record_worker_callback(
+                job_id,
+                WorkerCallbackType.HEARTBEAT,
+                "running",
+                {"progress": "repo_cloned"},
+            )
+
+            callbacks = flow.list_worker_callbacks(job_id)
+            self.assertEqual(2, len(callbacks))
+            self.assertEqual("started", callbacks[0]["callback_type"])
+            self.assertEqual(JobStatus.RUNNING.value, flow.store.get_job(job_id)["status"])
 
     def test_cloud_dispatch_status_reports_missing_ecs_configuration(self):
         with patch.dict("os.environ", {}, clear=True):
