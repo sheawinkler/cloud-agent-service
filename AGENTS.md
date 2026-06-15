@@ -7,8 +7,10 @@ clone and push a review branch to `origin`. GitHub repo jobs use the real GitHub
 App clone, branch push, and PR path only when app credentials are configured.
 Each repo update is also a minimal lab run: `ModelSpec` + `AgentSpec` +
 `HarnessSpec` + evidence -> `PromotionDecision`.
-DuckDB, Vercel preview deployment, and non-local execution providers are opt-in
-contracts unless their explicit env flags and credentials are configured.
+DuckDB is the lab warehouse when available; SQLite remains the default
+operational job store. Vercel preview deployment and non-local execution
+providers are opt-in contracts unless their explicit env flags and credentials
+are configured.
 
 ## Boundaries
 
@@ -36,9 +38,14 @@ contracts unless their explicit env flags and credentials are configured.
   base before live cloud dispatch; local defaults intentionally skip callbacks.
 - Treat artifact storage as local unless `AGENT_CLOUD_ARTIFACT_PROVIDER` and
   related env are configured.
-- Treat SQLite as the default job store. Use DuckDB only with
-  `AGENT_CLOUD_DB_PROVIDER=duckdb`; do not present it as production multi-writer
-  infrastructure.
+- Treat SQLite as the default operational job store. Treat DuckDB as the lab
+  warehouse/read model unless `AGENT_CLOUD_DB_PROVIDER=duckdb` is explicitly set
+  for local operational-store testing. Do not present DuckDB as production
+  multi-writer infrastructure.
+- Treat Postgres/RDS as the production database target contract until a real SQL
+  adapter is implemented and verified.
+- Treat worker leases as the control-plane truth for active workers; callbacks
+  are supporting evidence and heartbeat input.
 - Treat Vercel preview deployment as a recorded contract unless
   `AGENT_CLOUD_DEPLOYMENT_PROVIDER=vercel_preview`,
   `AGENT_CLOUD_VERCEL_DEPLOY_ENABLED=1`, and `VERCEL_TOKEN` are configured.
@@ -55,8 +62,9 @@ contracts unless their explicit env flags and credentials are configured.
   copy, generic Git clone/sync, GitHub App clone/sync, repo profiling and
   memory, model/agent registry, budget charging, deterministic coding action,
   tests, gates, preview proof, promotion decision, mock PR sync, and mock deploy.
-- `store.py`: SQLite job and event persistence.
-- `database.py`: SQLite/DuckDB embedded database adapter.
+- `store.py`: operational job, event, callback, lease, and lab-run persistence.
+- `database.py`: SQLite/DuckDB embedded adapter plus Postgres target readiness.
+- `lab_warehouse.py`: DuckDB materialized lab read model.
 - `orchestrator.py`: local queue plus persisted queued-job runner.
 - `worker.py`: container-friendly one-job or claim-next entry point.
 - `cloud_dispatch.py`: AWS ECS/Fargate dry-run dispatch request builder and

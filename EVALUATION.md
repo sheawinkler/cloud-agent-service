@@ -19,6 +19,7 @@ the deploy boundary when evidence is weak.
 | Repo memory | Follow-up jobs can reuse prior repo context. | `repo_memory_loaded` is emitted and `repo_memory` records the last profile. |
 | Model/agent/harness tracking | A repo update is attributable to a specific lab config. | Worker payload and result evidence include `ModelSpec`, `AgentSpec`, and `HarnessSpec`. |
 | Lab history | Model/agent/harness runs can be compared across jobs. | `lab_runs` records terminal runs and `/lab/summary` groups promotions. |
+| Lab warehouse | Lab analytics are separated from operational writes. | `/lab/warehouse/status` reports the DuckDB read model and materialized run count. |
 | Leaderboard | Strong model/agent/harness tuples are ranked from terminal outcomes. | `/lab/leaderboard` reports promotion rate and average run metrics. |
 | Harness portability | The control plane can route to known and custom agent harness contracts. | `/harnesses` exposes a ranked registry with a top-20 slice, and `custom:<name>` harness IDs are accepted as dispatch contracts. |
 | Harness adapter ABI | Harness execution is a stable contract rather than a hard-coded local action. | Worker payloads include `harness_adapter_contract`, and evidence includes `harness_adapter_result`. |
@@ -29,16 +30,18 @@ the deploy boundary when evidence is weak.
 | Lab router | New work can be routed from evidence instead of hard-coded defaults. | `/lab/router/recommend` returns a `RoutingDecision`; default `fixed` behavior remains unchanged. |
 | Cloud worker execution | ECS submission is possible only behind explicit env gates. | `/cloud-dispatch-plan` stays dry-run; `/cloud-dispatch` persists submitted or failed dispatch records. |
 | Worker callbacks | Cloud workers can report progress without trusting logs alone. | `/worker-callback` records started, heartbeat, artifact, completed, and failed callbacks. |
+| Worker leases | Active workers have recoverable control-plane state. | `/jobs/<id>/leases` shows owner, provider, heartbeat, expiry, and status. |
 | Artifact storage | Run artifacts have durable refs independent of local file paths. | `/jobs/<id>/artifacts` returns provider, URI, digest, and size. |
 | Experiment batches | Analysis experiments can fan out as bounded batches. | `/analysis/experiments/<id>/batch` records batch status and linked job IDs. |
 | Dataset lineage | SLM exports include split policy, redaction policy, fingerprints, and holdout guardrails. | Dataset manifest lineage marks holdout as evaluation-only. |
-| Database provider | Embedded storage can switch to DuckDB for local lab analytics. | `/integrations/database/status` reports `sqlite` or `duckdb`; DuckDB flow is opt-in. |
+| Database provider | Operational writes, lab analytics, and production target are distinct. | `/integrations/database/status` reports SQLite operational state, DuckDB lab warehouse, and Postgres readiness. |
 | Deployment provider | Deploy behavior is a provider contract instead of a hard-coded string. | `/integrations/deploy/status` reports local mock or Vercel preview mode. |
 | Execution provider | Worker execution target is explicit. | `/integrations/execution/status` reports local, ECS/Fargate, or Vercel Sandbox contract mode. |
 | Provenance | Successful runs leave a compact manifest tying evidence to hashes. | `/jobs/<id>/provenance` returns manifest path, digest, deployment record, and source fingerprints. |
 | Safety | Failed tests or policies stop sync/deploy. | Gate failure returns `failed` before mock PR/deploy. |
 | Preview proof | Reviewers get inspectable evidence before deploy. | Final result includes preview URL, preview artifact, and browser-proof checks. |
 | Promotion decision | The run has a clear model/agent verdict. | Final result returns `promote`, `reject`, or `needs_review` with evidence. |
+| Promotion comparison | Candidate tuples are judged against a baseline. | Promotion evidence includes `promotion-evaluation.v1` with candidate and baseline metrics. |
 | Task-suite comparison | Multiple scenarios can be compared as a lab batch. | `scripts/evaluate_task_suite.py` scores the shared `/tasks/corpus` cases. |
 | Git sync | Jobs are not locked to one Git forge. | Generic Git jobs clone a remote and push a review branch. |
 | GitHub sync | GitHub jobs can use app-scoped credentials instead of user tokens. | Configured GitHub App jobs clone, push a branch, and create or reuse a PR. |

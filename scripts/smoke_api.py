@@ -101,6 +101,22 @@ def run_smoke(base_url: str, repo_path: str) -> dict[str, Any]:
         response=database,
     )
 
+    warehouse = client.get("/lab/warehouse/status")
+    record(
+        results,
+        "lab_warehouse_status",
+        warehouse["provider"] == "duckdb" and "materialized_runs" in warehouse,
+        response=warehouse,
+    )
+
+    live = client.get("/integrations/live/status")
+    record(
+        results,
+        "live_provider_status",
+        {"github", "cloud", "database", "deployment", "execution"}.issubset(set(live)),
+        response=live,
+    )
+
     deployment = client.get("/integrations/deploy/status")
     record(
         results,
@@ -238,7 +254,7 @@ def run_smoke(base_url: str, repo_path: str) -> dict[str, Any]:
         {
             "callback_type": "started",
             "status": "running",
-            "payload": {"smoke": True},
+            "payload": {"smoke": True, "worker_id": "smoke-worker"},
         },
     )
     record(
@@ -246,6 +262,30 @@ def run_smoke(base_url: str, repo_path: str) -> dict[str, Any]:
         "worker_callback_started",
         callback["callback_type"] == "started" and callback["status"] == "running",
         callback=callback,
+    )
+
+    lease = client.post(
+        f"/jobs/{job_id}/leases/acquire",
+        {
+            "worker_id": "smoke-api-worker",
+            "lease_seconds": 120,
+            "metadata": {"smoke": True},
+        },
+    )
+    heartbeat = client.post(
+        f"/jobs/{job_id}/leases/{lease['lease_id']}/heartbeat",
+        {
+            "lease_seconds": 120,
+            "metadata": {"progress": "smoke"},
+        },
+    )
+    record(
+        results,
+        "job_lease_heartbeat",
+        lease["status"] == "active"
+        and heartbeat["lease_id"] == lease["lease_id"]
+        and heartbeat["status"] == "active",
+        lease_id=lease["lease_id"],
     )
 
     run = client.post(f"/jobs/{job_id}/run")
@@ -259,7 +299,12 @@ def run_smoke(base_url: str, repo_path: str) -> dict[str, Any]:
         and run.get("evidence", {}).get("deployment_provider", {}).get("provider")
         in {"local_mock", "vercel_preview"}
         and run.get("evidence", {}).get("provenance", {}).get("schema_version")
-        == "provenance-manifest.v1",
+        == "provenance-manifest.v1"
+        and run.get("promotion_decision", {})
+        .get("evidence", {})
+        .get("promotion_evaluation", {})
+        .get("schema_version")
+        == "promotion-evaluation.v1",
         status=run["status"],
         deployment_status=run["deployment_status"],
     )
@@ -289,6 +334,14 @@ def run_smoke(base_url: str, repo_path: str) -> dict[str, Any]:
         "worker_callbacks",
         any(item["callback_type"] == "started" for item in callbacks["callbacks"]),
         callbacks=len(callbacks["callbacks"]),
+    )
+
+    leases = client.get(f"/jobs/{job_id}/leases")
+    record(
+        results,
+        "job_leases",
+        any(item["status"] == "completed" for item in leases["leases"]),
+        leases=len(leases["leases"]),
     )
 
     artifacts = client.get(f"/jobs/{job_id}/artifacts")
@@ -351,6 +404,14 @@ def run_smoke(base_url: str, repo_path: str) -> dict[str, Any]:
         response=lab_summary,
     )
 
+    warehouse_refresh = client.post("/lab/warehouse/refresh")
+    record(
+        results,
+        "lab_warehouse_refresh",
+        "synced" in warehouse_refresh and "ready" in warehouse_refresh,
+        response=warehouse_refresh,
+    )
+
     lab_leaderboard = client.get("/lab/leaderboard")
     record(
         results,
@@ -375,6 +436,9 @@ def run_smoke(base_url: str, repo_path: str) -> dict[str, Any]:
         and "Database" in lab_ui
         and "Deployment" in lab_ui
         and "Execution" in lab_ui
+        and "Lab Warehouse" in lab_ui
+        and "Live Providers" in lab_ui
+        and "Worker Leases" in lab_ui
         and "Provenance" in lab_ui
         and "Analysis Cases" in lab_ui
         and "Dataset Export" in lab_ui,

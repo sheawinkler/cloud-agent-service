@@ -54,8 +54,8 @@ def evaluate_suite(suite: TaskSuite | None = None) -> dict[str, Any]:
             "checks_passed": checks_passed,
             "checks_total": checks_total,
             "tasks": task_results,
-            "lab_summary": flow.store.lab_summary(),
-            "leaderboard": flow.store.lab_leaderboard(),
+            "lab_summary": flow.lab_summary(),
+            "leaderboard": flow.lab_leaderboard(),
         }
 
 

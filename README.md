@@ -17,9 +17,10 @@ The current layer adds analysis cases, experiment reports, redacted SLM dataset
 exports, and a leaderboard-backed router for Language Model Lab comparisons.
 It also adds an env-gated ECS submit path, worker callbacks, artifact storage
 references, experiment batches, dataset lineage, and a denser lab dashboard.
-The current provider layer adds opt-in DuckDB state, deployment-provider
-contracts, a Vercel preview contract, execution-provider status, and provenance
-manifests for successful runs.
+The current provider layer adds a DuckDB-backed lab warehouse, a Postgres/RDS
+production database readiness contract, worker leases/heartbeats, deployment
+provider contracts, a Vercel preview contract, execution-provider status, and
+provenance manifests for successful runs.
 
 Local repo jobs still use mock PR and deployment artifacts. Generic Git jobs
 clone from `git_url` and push an agent branch back to `origin`. GitHub repo jobs
@@ -64,7 +65,9 @@ Failure exits:
   - Test/gate failure -> no PR, no deploy
 
 Monitoring:
-  - SQLite job events
+  - Operational job events
+  - Worker leases and heartbeat age
+  - DuckDB lab warehouse summaries
   - Docker logs
   - GET /jobs/{job_id}
 ```
@@ -76,8 +79,10 @@ Monitoring:
   generic Git clone/sync, GitHub App clone/PR sync, deterministic edit, tests,
   policy gates, preview artifacts, local GitHub sync mock, and local deployment
   mock.
-- `store.py`: SQLite job and event persistence.
-- `database.py`: SQLite default plus opt-in DuckDB compatibility adapter.
+- `store.py`: operational job, event, callback, lease, and lab-run persistence.
+- `database.py`: SQLite default, DuckDB compatibility, and Postgres target
+  readiness contracts.
+- `lab_warehouse.py`: DuckDB materialized read model for lab analytics.
 - `orchestrator.py`: local in-memory queue plus persisted queued-job runner.
 - `worker.py`: container-friendly single-job or claim-next entry point with
   optional HTTP worker callbacks.
@@ -344,8 +349,11 @@ curl -X POST http://127.0.0.1:8000/lab/router/recommend \
   -d '{"prompt":"For my shopping website, create a buy button."}'
 curl -sS http://127.0.0.1:8000/jobs/<job_id>/artifacts
 curl -sS http://127.0.0.1:8000/jobs/<job_id>/worker-callbacks
+curl -sS http://127.0.0.1:8000/jobs/<job_id>/leases
 curl -sS http://127.0.0.1:8000/jobs/<job_id>/provenance
 curl -sS http://127.0.0.1:8000/integrations/database/status
+curl -sS http://127.0.0.1:8000/integrations/live/status
+curl -sS http://127.0.0.1:8000/lab/warehouse/status
 curl -sS http://127.0.0.1:8000/integrations/deploy/status
 curl -sS http://127.0.0.1:8000/integrations/execution/status
 open http://127.0.0.1:8000/lab
@@ -373,7 +381,15 @@ AGENT_CLOUD_ECS_SUBMIT_ENABLED=1 \
 curl -X POST http://127.0.0.1:8000/jobs/<job_id>/cloud-dispatch
 ```
 
-Use DuckDB instead of SQLite for the embedded local lab store:
+Use DuckDB for the lab warehouse while keeping SQLite as the operational job
+store:
+
+```bash
+AGENT_CLOUD_LAB_WAREHOUSE=.runtime/lab.duckdb \
+uvicorn cloud_agent_service.app:app --reload
+```
+
+Switch the whole embedded operational store to DuckDB only for local lab tests:
 
 ```bash
 AGENT_CLOUD_DB_PROVIDER=duckdb \
@@ -382,9 +398,14 @@ uvicorn cloud_agent_service.app:app --reload
 ```
 
 SQLite remains the default because it is the smallest operational queue/store
-for this MVP. DuckDB is useful for local analytics, portable lab files, and
-ad-hoc model/agent comparison queries; it is not a replacement for managed
-multi-writer production state.
+for this MVP. DuckDB is now the default lab warehouse when available because it
+is useful for portable analytics, dataset inspection, and model/agent comparison
+queries. It is not a replacement for managed multi-writer production state.
+
+The production database target is Postgres/RDS. `/integrations/database/status`
+reports the current operational store, the DuckDB lab warehouse, and the
+Postgres readiness contract. A real Postgres SQL adapter is intentionally
+separate from this local MVP boundary.
 
 Record a Vercel preview deployment contract without live submit:
 
