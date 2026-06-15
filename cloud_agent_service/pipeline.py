@@ -26,6 +26,8 @@ from cloud_agent_service.analysis_lab import (
 from cloud_agent_service.artifact_schema import RunArtifact, RunArtifactWriter
 from cloud_agent_service.artifact_store import ArtifactStorage
 from cloud_agent_service.dataset_export import SlmDatasetExporter
+from cloud_agent_service.deployment import DeploymentManager
+from cloud_agent_service.execution import ExecutionProvider
 from cloud_agent_service.harness_adapters import (
     HarnessAdapterRegistry,
     HarnessExecutionRequest,
@@ -62,6 +64,7 @@ from cloud_agent_service.models import (
     WorkerCallbackType,
     WorkerJobPayload,
 )
+from cloud_agent_service.provenance import ProvenanceWriter
 from cloud_agent_service.security_profiles import HarnessSecurityRegistry
 from cloud_agent_service.store import JobStore
 
@@ -1153,7 +1156,9 @@ class AgentCloudFlow:
         self.github_app_sync = GitHubAppSync(self.github_client)
         self.github_integration = GitHubIntegration(self.github_client)
         self.preview_publisher = PreviewPublisher()
-        self.deployer = LocalDeployer()
+        self.deployer = DeploymentManager()
+        self.execution_provider = ExecutionProvider()
+        self.provenance_writer = ProvenanceWriter()
         self._seed_analysis_cases()
 
     def create_job(self, request: JobRequest) -> str:
@@ -1296,11 +1301,15 @@ class AgentCloudFlow:
             return result
 
         self.store.add_event(job_id, "deployment_approved", {"approved_by": job["user_id"]})
-        deployment_status = self.deployer.deploy(
-            self.artifacts_dir,
-            job_id,
-            DeploymentPolicy.LOCAL,
+        deployment = self.deployer.deploy(
+            repo_path=Path(job["workspace_path"] or job["repo_path"]),
+            artifacts_dir=self.artifacts_dir,
+            job_id=job_id,
+            policy=DeploymentPolicy.LOCAL,
+            evidence=result.evidence,
         )
+        deployment_status = deployment.status
+        result.evidence["deployment_provider"] = asdict(deployment)
         result.deployment_status = deployment_status
         result.promotion_decision = asdict(
             self._promotion_decision(
@@ -1319,7 +1328,7 @@ class AgentCloudFlow:
             "promotion_decision_created",
             result.promotion_decision,
         )
-        self.store.add_event(job_id, "deployment_finished", {"status": deployment_status})
+        self.store.add_event(job_id, "deployment_finished", asdict(deployment))
         self.store.update_job(job_id, result_json=asdict(result))
         stored = self._stored_result(self.store.get_job(job_id))
         self._record_lab_run(job_id, stored)
@@ -1597,7 +1606,11 @@ class AgentCloudFlow:
         try:
             self._charge_budget(job_id, request, "dispatch", 64, "worker dispatch envelope")
             self.store.update_job(job_id, status=JobStatus.DISPATCHED)
-            self.store.add_event(job_id, "agent_dispatched", {"mode": "local-container-contract"})
+            self.store.add_event(
+                job_id,
+                "agent_dispatched",
+                self.execution_provider.dispatch_event_payload(),
+            )
             self.store.add_event(
                 job_id,
                 "lab_run_configured",
@@ -1848,10 +1861,36 @@ class AgentCloudFlow:
             self.store.add_event(job_id, "pr_created_or_updated", {"pr_url": pr_url})
 
             self.store.update_job(job_id, status=JobStatus.DEPLOYING)
-            deployment_status = self.deployer.deploy(
-                self.artifacts_dir, job_id, request.deploy_policy
+            deployment = self.deployer.deploy(
+                repo_path=workspace_repo,
+                artifacts_dir=self.artifacts_dir,
+                job_id=job_id,
+                policy=request.deploy_policy,
+                evidence=evidence,
             )
-            self.store.add_event(job_id, "deployment_finished", {"status": deployment_status})
+            deployment_status = deployment.status
+            evidence["deployment_provider"] = asdict(deployment)
+            provenance = self.provenance_writer.write(
+                artifacts_dir=self.artifacts_dir,
+                job_id=job_id,
+                repo_path=workspace_repo,
+                changed_files=agent_result["changed_files"],
+                evidence=evidence,
+                policy_gates=gates,
+                deployment_record=asdict(deployment),
+            )
+            evidence["provenance"] = {
+                "schema_version": provenance.schema_version,
+                "path": provenance.path,
+                "sha256": provenance.sha256,
+                "bytes": provenance.bytes,
+            }
+            self.store.add_event(job_id, "deployment_finished", asdict(deployment))
+            self.store.add_event(
+                job_id,
+                "provenance_manifest_created",
+                evidence["provenance"],
+            )
 
             self.store.update_job(job_id, status=JobStatus.SUCCEEDED)
             self.store.add_event(job_id, "job_succeeded", {})
@@ -2006,6 +2045,8 @@ class AgentCloudFlow:
             "deployment_status": deployment_status,
             "preview_url": evidence.get("preview_url"),
             "run_artifact": evidence.get("run_artifact"),
+            "deployment_provider": evidence.get("deployment_provider"),
+            "provenance": evidence.get("provenance"),
         }
         if status != JobStatus.SUCCEEDED:
             return PromotionDecision(

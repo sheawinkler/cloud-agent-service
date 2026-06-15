@@ -93,7 +93,7 @@ class WorkerCallbackPayload(BaseModel):
 
 def build_flow() -> AgentCloudFlow:
     runtime_root = Path(os.environ.get("AGENT_CLOUD_RUNTIME", ".runtime"))
-    store = JobStore(os.environ.get("AGENT_CLOUD_DB", str(runtime_root / "jobs.sqlite3")))
+    store = JobStore.from_env(runtime_root)
     return AgentCloudFlow(
         store=store,
         workspace_root=os.environ.get("AGENT_CLOUD_WORKSPACES", str(runtime_root / "workspaces")),
@@ -142,6 +142,21 @@ def github_status() -> dict[str, Any]:
 @app.get("/integrations/cloud/status")
 def cloud_status() -> dict[str, Any]:
     return ecs_dispatch_planner.status()
+
+
+@app.get("/integrations/database/status")
+def database_status() -> dict[str, Any]:
+    return asdict(flow.store.status())
+
+
+@app.get("/integrations/deploy/status")
+def deployment_provider_status() -> dict[str, Any]:
+    return asdict(flow.deployer.status())
+
+
+@app.get("/integrations/execution/status")
+def execution_provider_status() -> dict[str, Any]:
+    return asdict(flow.execution_provider.status())
 
 
 @app.get("/models")
@@ -456,6 +471,23 @@ def list_job_artifacts(job_id: str) -> dict[str, Any]:
     return {"artifacts": flow.list_artifact_refs(job_id)}
 
 
+@app.get("/jobs/{job_id}/provenance")
+def get_job_provenance(job_id: str) -> dict[str, Any]:
+    job = flow.store.get_job(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="job not found")
+    result = job.get("result_json") or {}
+    evidence = result.get("evidence", {}) if isinstance(result, dict) else {}
+    provenance = evidence.get("provenance")
+    if not provenance:
+        raise HTTPException(status_code=404, detail="provenance not found")
+    manifest_path = Path(provenance.get("path", ""))
+    manifest = None
+    if manifest_path.exists() and manifest_path.is_file():
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    return {"provenance": provenance, "manifest": manifest}
+
+
 @app.post("/jobs/{job_id}/cancel")
 def cancel_job(job_id: str) -> dict[str, Any]:
     try:
@@ -680,6 +712,18 @@ def _lab_dashboard_html() -> str:
         <pre id="cloud"></pre>
       </div>
       <div class="panel">
+        <h2>Database</h2>
+        <pre id="database"></pre>
+      </div>
+      <div class="panel">
+        <h2>Deployment</h2>
+        <pre id="deployment"></pre>
+      </div>
+      <div class="panel">
+        <h2>Execution</h2>
+        <pre id="execution"></pre>
+      </div>
+      <div class="panel">
         <h2>Router Recommendation</h2>
         <div class="inline">
           <input id="routerPrompt" value="For my shopping website, create a buy button.">
@@ -691,6 +735,10 @@ def _lab_dashboard_html() -> str:
         <h2>Dataset Export</h2>
         <button type="button" id="exportDataset">Export</button>
         <pre id="dataset"></pre>
+      </div>
+      <div class="panel">
+        <h2>Provenance</h2>
+        <pre id="provenance">No run selected.</pre>
       </div>
     </section>
     <section>
@@ -761,8 +809,11 @@ def _lab_dashboard_html() -> str:
         fetch('/lab/leaderboard').then((response) => response.json()),
         fetch('/lab/runs?limit=50').then((response) => response.json())
       ]);
-      const [cloud, cases] = await Promise.all([
+      const [cloud, database, deployment, execution, cases] = await Promise.all([
         fetch('/integrations/cloud/status').then((response) => response.json()),
+        fetch('/integrations/database/status').then((response) => response.json()),
+        fetch('/integrations/deploy/status').then((response) => response.json()),
+        fetch('/integrations/execution/status').then((response) => response.json()),
         fetch('/analysis/cases').then((response) => response.json())
       ]);
       const statuses = summary.by_promotion_status || {};
@@ -775,6 +826,9 @@ def _lab_dashboard_html() -> str:
         `<div class="metric"><strong>${escapeHtml(value)}</strong>${escapeHtml(label)}</div>`
       ).join('');
       document.getElementById('cloud').textContent = JSON.stringify(cloud, null, 2);
+      document.getElementById('database').textContent = JSON.stringify(database, null, 2);
+      document.getElementById('deployment').textContent = JSON.stringify(deployment, null, 2);
+      document.getElementById('execution').textContent = JSON.stringify(execution, null, 2);
       document.getElementById('cases').innerHTML = (cases.cases || []).map((row) => `
         <tr>
           <td>${escapeHtml(row.case_id)}</td>
@@ -810,6 +864,12 @@ def _lab_dashboard_html() -> str:
           <td>${escapeHtml(run.tokens_used)}/${escapeHtml(run.token_budget)}</td>
         </tr>
       `).join('');
+      const latest = (runs.runs || [])[0];
+      if (latest) {
+        const response = await fetch(`/jobs/${latest.job_id}/provenance`);
+        document.getElementById('provenance').textContent =
+          response.ok ? JSON.stringify(await response.json(), null, 2) : 'No provenance yet.';
+      }
     }
     document.getElementById('refresh').addEventListener('click', loadLab);
     document.getElementById('recommend').addEventListener('click', async () => {

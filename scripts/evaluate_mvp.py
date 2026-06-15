@@ -42,6 +42,7 @@ def evaluate_buy_button() -> dict[str, object]:
         result = flow.run_job(job_id)
         workspace_index = root / "workspaces" / job_id / "repo" / "index.html"
         rendered_change = workspace_index.read_text(encoding="utf-8")
+        provenance_path = result.evidence.get("provenance", {}).get("path", "")
         checks = {
             "job_succeeded": result.status == JobStatus.SUCCEEDED,
             "buy_button_present": 'data-agent="buy-button"' in rendered_change,
@@ -60,6 +61,11 @@ def evaluate_buy_button() -> dict[str, object]:
             "browser_buy_button_check": result.evidence.get("browser_checks", {}).get(
                 "buy_button_present", False
             ),
+            "deployment_provider_recorded": (
+                result.evidence.get("deployment_provider", {}).get("provider") == "local_mock"
+            ),
+            "provenance_manifest_created": bool(provenance_path)
+            and Path(provenance_path).exists(),
             "promotion_decision_created": result.promotion_decision.get("status")
             in {"promote", "needs_review"},
         }

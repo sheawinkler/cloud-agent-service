@@ -1,3 +1,4 @@
+import importlib.util
 import json
 import sqlite3
 import subprocess
@@ -8,6 +9,7 @@ from unittest.mock import patch
 
 from cloud_agent_service.cloud_dispatch import EcsDispatchPlanner
 from cloud_agent_service.dataset_export import SlmDatasetExporter
+from cloud_agent_service.execution import ExecutionProvider
 from cloud_agent_service.harness_registry import HarnessRegistry
 from cloud_agent_service.models import (
     CloudDispatchStatus,
@@ -162,6 +164,17 @@ class CloudAgentServiceFlowTests(unittest.TestCase):
             self.assertEqual(3, len(result.evidence["artifact_refs"]))
             self.assertEqual(3, len(flow.store.list_artifact_refs(job_id)))
             self.assertEqual("local", result.evidence["artifact_refs"][0]["provider"])
+            self.assertEqual("local_mock", result.evidence["deployment_provider"]["provider"])
+            self.assertEqual(
+                "provenance-manifest.v1",
+                result.evidence["provenance"]["schema_version"],
+            )
+            self.assertTrue(Path(result.evidence["provenance"]["path"]).exists())
+            provenance_payload = json.loads(
+                Path(result.evidence["provenance"]["path"]).read_text(encoding="utf-8")
+            )
+            self.assertEqual(job_id, provenance_payload["job_id"])
+            self.assertEqual("index.html", provenance_payload["source_fingerprints"][0]["path"])
             self.assertGreater(flow.store.budget_tokens_used(job_id), 0)
             lab_run = flow.store.get_lab_run(job_id)
             self.assertEqual("local-deterministic", lab_run["model_id"])
@@ -1065,6 +1078,64 @@ class CloudAgentServiceFlowTests(unittest.TestCase):
 
             self.assertFalse(status["configured"])
             self.assertIn("AGENT_CLOUD_ECS_CLUSTER", status["missing"])
+
+    def test_duckdb_store_backend_runs_local_flow_when_available(self):
+        if importlib.util.find_spec("duckdb") is None:
+            self.skipTest("duckdb package is not installed")
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = self._build_repo(root)
+            flow = AgentCloudFlow(
+                store=JobStore(root / "jobs.duckdb", provider="duckdb"),
+                workspace_root=root / "workspaces",
+                artifacts_dir=root / "artifacts",
+            )
+            self.assertEqual("duckdb", flow.store.status().provider)
+
+            job_id = flow.create_job(
+                JobRequest(
+                    prompt="For my shopping website, create a buy button.",
+                    repo_path=str(repo),
+                    deploy_policy=DeploymentPolicy.LOCAL,
+                )
+            )
+            result = flow.run_job(job_id)
+
+            self.assertEqual(JobStatus.SUCCEEDED, result.status)
+            self.assertEqual("promote", result.promotion_decision["status"])
+            self.assertEqual(1, flow.store.lab_summary()["total_runs"])
+
+    def test_vercel_preview_provider_records_dry_run_contract(self):
+        with tempfile.TemporaryDirectory() as tmp, patch.dict(
+            "os.environ",
+            {"AGENT_CLOUD_DEPLOYMENT_PROVIDER": "vercel_preview"},
+        ):
+            root = Path(tmp)
+            repo = self._build_repo(root)
+            flow = self._build_flow(root)
+            self.assertEqual("vercel_preview", flow.deployer.status().provider)
+
+            job_id = flow.create_job(
+                JobRequest(
+                    prompt="For my shopping website, create a buy button.",
+                    repo_path=str(repo),
+                    deploy_policy=DeploymentPolicy.PREVIEW_ONLY,
+                )
+            )
+            result = flow.run_job(job_id)
+
+            self.assertEqual("ready: vercel preview contract recorded", result.deployment_status)
+            self.assertEqual("vercel_preview", result.evidence["deployment_provider"]["provider"])
+            self.assertTrue(Path(result.evidence["deployment_provider"]["artifact_path"]).exists())
+            self.assertEqual("needs_review", result.promotion_decision["status"])
+
+    def test_execution_provider_status_contract(self):
+        with patch.dict("os.environ", {"AGENT_CLOUD_EXECUTION_PROVIDER": "vercel_sandbox"}):
+            status = ExecutionProvider().status()
+
+            self.assertEqual("vercel_sandbox", status.provider)
+            self.assertEqual("sandbox-contract", status.mode)
+            self.assertTrue(status.configured)
 
     def test_openai_model_agent_path_requires_explicit_runtime_enablement(self):
         with tempfile.TemporaryDirectory() as tmp, patch.dict(

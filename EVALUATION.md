@@ -13,7 +13,7 @@ the deploy boundary when evidence is weak.
 | Prompt quality | The raw request becomes a concise implementation brief. | `prompt_upgraded` event is recorded. |
 | Isolation | Each job gets its own workspace. | Workspace lives under `workspaces/<job_id>/repo`. |
 | Determinism | Checks and gates are repeatable. | `python3 -m compileall .` is run for every job. |
-| Auditability | The job can be reconstructed from events. | SQLite events show each major transition. |
+| Auditability | The job can be reconstructed from events. | Configured store events show each major transition. |
 | Budget control | Work stops before spend exceeds policy. | Budget ledger records each stage and tiny budgets fail before sync. |
 | Repo intelligence | The service knows what kind of repo it is editing. | `repo_analyzed` records framework, package manager, and test hints. |
 | Repo memory | Follow-up jobs can reuse prior repo context. | `repo_memory_loaded` is emitted and `repo_memory` records the last profile. |
@@ -32,6 +32,10 @@ the deploy boundary when evidence is weak.
 | Artifact storage | Run artifacts have durable refs independent of local file paths. | `/jobs/<id>/artifacts` returns provider, URI, digest, and size. |
 | Experiment batches | Analysis experiments can fan out as bounded batches. | `/analysis/experiments/<id>/batch` records batch status and linked job IDs. |
 | Dataset lineage | SLM exports include split policy, redaction policy, fingerprints, and holdout guardrails. | Dataset manifest lineage marks holdout as evaluation-only. |
+| Database provider | Embedded storage can switch to DuckDB for local lab analytics. | `/integrations/database/status` reports `sqlite` or `duckdb`; DuckDB flow is opt-in. |
+| Deployment provider | Deploy behavior is a provider contract instead of a hard-coded string. | `/integrations/deploy/status` reports local mock or Vercel preview mode. |
+| Execution provider | Worker execution target is explicit. | `/integrations/execution/status` reports local, ECS/Fargate, or Vercel Sandbox contract mode. |
+| Provenance | Successful runs leave a compact manifest tying evidence to hashes. | `/jobs/<id>/provenance` returns manifest path, digest, deployment record, and source fingerprints. |
 | Safety | Failed tests or policies stop sync/deploy. | Gate failure returns `failed` before mock PR/deploy. |
 | Preview proof | Reviewers get inspectable evidence before deploy. | Final result includes preview URL, preview artifact, and browser-proof checks. |
 | Promotion decision | The run has a clear model/agent verdict. | Final result returns `promote`, `reject`, or `needs_review` with evidence. |
@@ -65,6 +69,10 @@ the deploy boundary when evidence is weak.
 - Worker callback heartbeat age.
 - Artifact reference completeness by job.
 - Experiment batch completion/failure counts.
+- Database provider in use by run environment.
+- Deployment provider success/failure or dry-run contract count.
+- Execution provider selected by job.
+- Provenance manifest completion and hash availability.
 - Generic Git sync success rate.
 - GitHub App sync success rate.
 - Average changed files per job.
@@ -99,7 +107,7 @@ the deploy boundary when evidence is weak.
 
 5. Restart recovery
    - Restart the API after a completed job.
-   - Expected: job state and event history remain readable from SQLite.
+   - Expected: job state and event history remain readable from the configured store.
 
 6. Budget stop
    - Submit a valid request with a token budget below the first-stage estimate.
@@ -247,6 +255,27 @@ the deploy boundary when evidence is weak.
     - Expected: manifest includes split policy, redaction policy, source
       fingerprints, and holdout guard with `use_for_training=false`.
 
+31. DuckDB embedded store
+    - Start with `AGENT_CLOUD_DB_PROVIDER=duckdb` and run the happy path.
+    - Expected: job, events, budget entries, lab run, and provenance are
+      persisted; `/integrations/database/status` reports `duckdb`.
+
+32. Vercel preview contract
+    - Start with `AGENT_CLOUD_DEPLOYMENT_PROVIDER=vercel_preview` and leave
+      `AGENT_CLOUD_VERCEL_DEPLOY_ENABLED` unset.
+    - Expected: preview jobs record a Vercel deployment contract artifact but
+      do not call Vercel.
+
+33. Execution provider contract
+    - Set `AGENT_CLOUD_EXECUTION_PROVIDER=vercel_sandbox`.
+    - Expected: `/integrations/execution/status` reports sandbox contract mode;
+      no live sandbox execution is claimed.
+
+34. Provenance manifest
+    - Run a successful job and call `/jobs/<id>/provenance`.
+    - Expected: manifest includes changed-file fingerprints, artifact refs,
+      deployment provider record, policy gates, and promotion inputs.
+
 ## Evidence To Show In A Demo
 
 The demo should make these proof points visible without much narration:
@@ -278,6 +307,7 @@ policy_gate_result
 branch_pushed
 pr_created_or_updated
 deployment_finished
+provenance_manifest_created
 job_succeeded
 promotion_decision_created
 ```
@@ -289,6 +319,9 @@ metadata and promotion decisions, and `lab_runs` makes those decisions queryable
 for comparison; the OpenAI Responses path is present but disabled unless
 configured. Ranked and custom harness IDs are dispatch contracts, not proof that
 third-party CLIs or managed agents execute, until corresponding worker adapters
-are built and verified. Generic Git sync is provider agnostic, while GitHub PR
+are built and verified. DuckDB is an embedded local/lab backend, not managed
+multi-writer production state. Vercel preview and Vercel Sandbox modes are
+provider contracts unless their live env flags and credentials are configured
+and verified. Generic Git sync is provider agnostic, while GitHub PR
 creation is implemented only for `repo_provider=github` when app credentials are
 configured and verified.

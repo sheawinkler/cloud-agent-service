@@ -17,6 +17,9 @@ The current layer adds analysis cases, experiment reports, redacted SLM dataset
 exports, and a leaderboard-backed router for Language Model Lab comparisons.
 It also adds an env-gated ECS submit path, worker callbacks, artifact storage
 references, experiment batches, dataset lineage, and a denser lab dashboard.
+The current provider layer adds opt-in DuckDB state, deployment-provider
+contracts, a Vercel preview contract, execution-provider status, and provenance
+manifests for successful runs.
 
 Local repo jobs still use mock PR and deployment artifacts. Generic Git jobs
 clone from `git_url` and push an agent branch back to `origin`. GitHub repo jobs
@@ -74,11 +77,16 @@ Monitoring:
   policy gates, preview artifacts, local GitHub sync mock, and local deployment
   mock.
 - `store.py`: SQLite job and event persistence.
+- `database.py`: SQLite default plus opt-in DuckDB compatibility adapter.
 - `orchestrator.py`: local in-memory queue plus persisted queued-job runner.
 - `worker.py`: container-friendly single-job or claim-next entry point with
   optional HTTP worker callbacks.
 - `cloud_dispatch.py`: AWS ECS/Fargate dry-run request builder and env-gated
   live submitter.
+- `deployment.py`: local mock and Vercel preview deployment provider contracts.
+- `execution.py`: local, ECS/Fargate, and Vercel Sandbox execution-provider
+  status contracts.
+- `provenance.py`: run-level provenance manifest writer.
 - `artifact_store.py`: local/S3 artifact-reference indexing.
 - `harness_registry.py`: curated agent harness index, top-20 slice, and custom
   harness contract support.
@@ -132,6 +140,9 @@ Monitoring:
 22. Submit ECS worker tasks only behind explicit live-submit env flags.
 23. Track worker callbacks and artifact references for cloud execution evidence.
 24. Run experiment batches and preserve dataset lineage/holdout guardrails.
+25. Switch the embedded store to DuckDB for local lab analytics when explicitly
+    configured.
+26. Record deployment/execution provider status and provenance manifests.
 
 ## Model And Agent Lab Layer
 
@@ -333,6 +344,10 @@ curl -X POST http://127.0.0.1:8000/lab/router/recommend \
   -d '{"prompt":"For my shopping website, create a buy button."}'
 curl -sS http://127.0.0.1:8000/jobs/<job_id>/artifacts
 curl -sS http://127.0.0.1:8000/jobs/<job_id>/worker-callbacks
+curl -sS http://127.0.0.1:8000/jobs/<job_id>/provenance
+curl -sS http://127.0.0.1:8000/integrations/database/status
+curl -sS http://127.0.0.1:8000/integrations/deploy/status
+curl -sS http://127.0.0.1:8000/integrations/execution/status
 open http://127.0.0.1:8000/lab
 curl -sS http://127.0.0.1:8000/models
 curl -sS http://127.0.0.1:8000/harnesses
@@ -357,6 +372,39 @@ Submit to ECS only when live submit is explicitly enabled:
 AGENT_CLOUD_ECS_SUBMIT_ENABLED=1 \
 curl -X POST http://127.0.0.1:8000/jobs/<job_id>/cloud-dispatch
 ```
+
+Use DuckDB instead of SQLite for the embedded local lab store:
+
+```bash
+AGENT_CLOUD_DB_PROVIDER=duckdb \
+AGENT_CLOUD_DB=.runtime/jobs.duckdb \
+uvicorn cloud_agent_service.app:app --reload
+```
+
+SQLite remains the default because it is the smallest operational queue/store
+for this MVP. DuckDB is useful for local analytics, portable lab files, and
+ad-hoc model/agent comparison queries; it is not a replacement for managed
+multi-writer production state.
+
+Record a Vercel preview deployment contract without live submit:
+
+```bash
+AGENT_CLOUD_DEPLOYMENT_PROVIDER=vercel_preview \
+uvicorn cloud_agent_service.app:app --reload
+```
+
+Live Vercel preview submit remains explicit:
+
+```bash
+AGENT_CLOUD_DEPLOYMENT_PROVIDER=vercel_preview \
+AGENT_CLOUD_VERCEL_DEPLOY_ENABLED=1 \
+VERCEL_TOKEN=... \
+uvicorn cloud_agent_service.app:app --reload
+```
+
+`AGENT_CLOUD_EXECUTION_PROVIDER=vercel_sandbox` currently records a sandbox
+execution contract and status. A live sandbox adapter is still separate from
+the ECS worker submit path.
 
 Run the next persisted queued job without relying on the API process memory:
 
@@ -503,9 +551,12 @@ should not be committed.
 
 Artifacts include:
 
-- `jobs.sqlite3`: job and event state.
-- `budget_ledger`: token/runtime accounting table inside SQLite.
-- `repo_memory`: per-repo last-run profile and summary inside SQLite.
+- `jobs.sqlite3` or `jobs.duckdb`: job and event state, depending on
+  `AGENT_CLOUD_DB_PROVIDER`.
+- `budget_ledger`: token/runtime accounting table inside the configured
+  embedded store.
+- `repo_memory`: per-repo last-run profile and summary inside the configured
+  embedded store.
 - `lab_runs`: terminal run index for model/agent promotion summaries.
 - `workspaces/<job_id>/repo`: isolated copied repo workspace.
 - `artifacts/<job_id>-pr.json`: mock PR payload.
@@ -591,6 +642,8 @@ The MVP is still cloud-ready rather than fully cloud-native:
 - local mock PR artifact for local jobs; pushed review ref for generic Git jobs;
   real GitHub PR path for GitHub jobs
 - local mock deployment artifact instead of AWS deploy
+- local mock deployment provider unless `AGENT_CLOUD_DEPLOYMENT_PROVIDER` is set
+- local execution provider unless `AGENT_CLOUD_EXECUTION_PROVIDER` is set
 
 That keeps the full flow testable before replacing each local component with a
 cloud-backed implementation.

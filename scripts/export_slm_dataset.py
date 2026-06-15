@@ -20,7 +20,7 @@ def export_dataset(
     limit: int,
     promotion_status: str | None,
 ) -> dict[str, object]:
-    store = JobStore(os.environ.get("AGENT_CLOUD_DB", str(runtime_root / "jobs.sqlite3")))
+    store = JobStore.from_env(runtime_root)
     artifacts_dir = Path(os.environ.get("AGENT_CLOUD_ARTIFACTS", str(runtime_root / "artifacts")))
     export = SlmDatasetExporter(store, artifacts_dir).export(
         export_id=export_id,

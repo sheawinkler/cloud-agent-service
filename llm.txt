@@ -19,6 +19,8 @@ leaderboard.
 Analysis cases, experiment reports, SLM dataset export, router decisions,
 worker callbacks, artifact refs, experiment batches, and dataset lineage turn
 the control loop into a small Language Model Lab surface.
+DuckDB, Vercel preview deployment, execution-provider status, and provenance
+manifests are now provider-layer contracts around that loop.
 
 Important boundary:
 The current implementation calls AWS only through `/jobs/<job_id>/cloud-dispatch`
@@ -34,6 +36,14 @@ before live execution can be claimed.
 The default local-template adapter is deterministic. The pi-coding-agent
 adapter is opt-in via AGENT_CLOUD_ENABLE_PI_CODING_AGENT or
 AGENT_CLOUD_ENABLE_EXTERNAL_HARNESS plus AGENT_CLOUD_PI_CODING_AGENT_CMD.
+SQLite is still the default store. DuckDB is opt-in with
+AGENT_CLOUD_DB_PROVIDER=duckdb and is best treated as an embedded local lab
+backend, not managed multi-writer production state.
+Vercel preview deployment is a dry-run contract unless
+AGENT_CLOUD_DEPLOYMENT_PROVIDER=vercel_preview,
+AGENT_CLOUD_VERCEL_DEPLOY_ENABLED=1, and VERCEL_TOKEN are configured.
+Vercel Sandbox is an execution-provider status contract until a live adapter is
+implemented and verified.
 
 Mirendil framing:
 Treat each repo update as a minimal model lab run: ModelSpec + AgentSpec +
@@ -45,10 +55,14 @@ Primary files:
 - app.py: FastAPI API.
 - pipeline.py: end-to-end application flow.
 - store.py: SQLite job and event storage.
+- database.py: SQLite/DuckDB embedded store adapter.
 - orchestrator.py: local queue and runner.
 - worker.py: one-job container entry point with optional HTTP callbacks.
 - cloud_dispatch.py: ECS/Fargate dry-run dispatch request builder and env-gated
   live submitter.
+- deployment.py: local mock and Vercel preview deployment providers.
+- execution.py: local/ECS/Vercel Sandbox execution-provider contracts.
+- provenance.py: run-level provenance manifest writer.
 - artifact_store.py: local/S3 artifact reference indexing.
 - harness_registry.py: ranked agent harness index, top_20 slice, and custom
   harness contracts.
@@ -91,9 +105,13 @@ Monitor commands:
 - curl -sS http://127.0.0.1:8000/datasets/exports/<export_id>
 - curl -sS http://127.0.0.1:8000/jobs/<job_id>/artifacts
 - curl -sS http://127.0.0.1:8000/jobs/<job_id>/worker-callbacks
+- curl -sS http://127.0.0.1:8000/jobs/<job_id>/provenance
 - curl -sS http://127.0.0.1:8000/models
 - curl -sS http://127.0.0.1:8000/harnesses
 - curl -sS http://127.0.0.1:8000/integrations/cloud/status
+- curl -sS http://127.0.0.1:8000/integrations/database/status
+- curl -sS http://127.0.0.1:8000/integrations/deploy/status
+- curl -sS http://127.0.0.1:8000/integrations/execution/status
 
 Expected successful flow:
 1. Receive prompt.
@@ -113,6 +131,7 @@ Expected successful flow:
     reports, dataset export, and router recommendations.
 15. Index artifact references and accept worker callbacks when a cloud worker
     posts them.
+16. Record deployment/execution provider evidence and a provenance manifest.
 
 Do not:
 - Treat mock PR URLs as real GitHub PRs.
@@ -122,6 +141,8 @@ Do not:
 - Treat ECS submit as live unless `AGENT_CLOUD_ECS_SUBMIT_ENABLED=1` and the
   submit endpoint returned a submitted dispatch.
 - Treat indexed harness IDs as live adapter execution without worker proof.
+- Treat DuckDB as production database infrastructure.
+- Treat Vercel preview/Sandbox contracts as live without env flags and evidence.
 - Commit runtime SQLite databases, generated workspaces, or artifacts.
 - Add package dependencies without updating the allowlist and tests.
 - Log or persist secrets.
@@ -145,3 +166,7 @@ Useful API reads:
 - POST /jobs/<job_id>/cloud-dispatch
 - POST /jobs/<job_id>/worker-callback
 - GET /jobs/<job_id>/artifacts
+- GET /jobs/<job_id>/provenance
+- GET /integrations/database/status
+- GET /integrations/deploy/status
+- GET /integrations/execution/status
