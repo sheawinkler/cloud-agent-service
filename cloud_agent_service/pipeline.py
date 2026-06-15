@@ -25,6 +25,7 @@ from cloud_agent_service.analysis_lab import (
 )
 from cloud_agent_service.artifact_schema import RunArtifact, RunArtifactWriter
 from cloud_agent_service.artifact_store import ArtifactStorage
+from cloud_agent_service.database import production_database_status
 from cloud_agent_service.dataset_export import SlmDatasetExporter
 from cloud_agent_service.deployment import DeploymentManager
 from cloud_agent_service.execution import ExecutionProvider
@@ -34,10 +35,12 @@ from cloud_agent_service.harness_adapters import (
 )
 from cloud_agent_service.harness_registry import HarnessRegistry
 from cloud_agent_service.lab_router import LabRouter
+from cloud_agent_service.lab_warehouse import LabWarehouse
 from cloud_agent_service.models import (
     AgentPlan,
     AgentSpec,
     CloudDispatchRecord,
+    CloudDispatchStatus,
     DatasetExport,
     DeploymentPolicy,
     ExperimentBatch,
@@ -1126,10 +1129,14 @@ class AgentCloudFlow:
         store: JobStore,
         workspace_root: str | Path,
         artifacts_dir: str | Path,
+        lab_warehouse: LabWarehouse | None = None,
     ) -> None:
         self.store = store
         self.workspace_root = Path(workspace_root)
         self.artifacts_dir = Path(artifacts_dir)
+        self.lab_warehouse = lab_warehouse or LabWarehouse(
+            self.artifacts_dir.parent / "lab.duckdb"
+        )
         self.lab_registry = ModelAgentRegistry()
         self.harness_registry = HarnessRegistry()
         self.harness_adapters = HarnessAdapterRegistry()
@@ -1525,8 +1532,130 @@ class AgentCloudFlow:
     def recommend_route(self, request: JobRequest) -> RoutingDecision:
         return self._routing_decision(request)
 
+    def database_status(self) -> dict[str, Any]:
+        return {
+            "operational_store": asdict(self.store.status()),
+            "lab_warehouse": asdict(self.lab_warehouse.status()),
+            "production_target": asdict(production_database_status()),
+            **asdict(self.store.status()),
+        }
+
+    def lab_warehouse_status(self) -> dict[str, Any]:
+        return asdict(self.lab_warehouse.status())
+
+    def refresh_lab_warehouse(self) -> dict[str, Any]:
+        return self.lab_warehouse.refresh_from_store(self.store)
+
+    def list_lab_runs(
+        self,
+        *,
+        limit: int = 50,
+        model_id: str | None = None,
+        agent_id: str | None = None,
+        harness_id: str | None = None,
+        promotion_status: str | None = None,
+    ) -> list[dict[str, Any]]:
+        if self.lab_warehouse.ready:
+            runs = self.lab_warehouse.list_runs(
+                limit=limit,
+                model_id=model_id,
+                agent_id=agent_id,
+                harness_id=harness_id,
+                promotion_status=promotion_status,
+            )
+            if runs:
+                return runs
+        return self.store.list_lab_runs(
+            limit=limit,
+            model_id=model_id,
+            agent_id=agent_id,
+            harness_id=harness_id,
+            promotion_status=promotion_status,
+        )
+
+    def lab_summary(self) -> dict[str, Any]:
+        if self.lab_warehouse.ready and self.lab_warehouse.status().materialized_runs:
+            return self.lab_warehouse.summary()
+        return self.store.lab_summary()
+
+    def lab_leaderboard(self, limit: int = 50) -> list[dict[str, Any]]:
+        if self.lab_warehouse.ready and self.lab_warehouse.status().materialized_runs:
+            return self.lab_warehouse.leaderboard(limit=limit)
+        return self.store.lab_leaderboard(limit=limit)
+
+    def acquire_job_lease(
+        self,
+        job_id: str,
+        *,
+        worker_id: str,
+        provider: str | None = None,
+        lease_seconds: int = 300,
+        metadata: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        if not self.store.get_job(job_id):
+            raise KeyError(f"unknown job_id: {job_id}")
+        provider = provider or self.execution_provider.status().provider
+        lease = self.store.acquire_job_lease(
+            job_id,
+            worker_id,
+            provider=provider,
+            lease_seconds=lease_seconds,
+            metadata=metadata,
+        )
+        self.store.add_event(
+            job_id,
+            "job_lease_acquired",
+            {
+                "lease_id": lease["lease_id"],
+                "worker_id": worker_id,
+                "provider": provider,
+                "expires_at": lease["expires_at"],
+            },
+        )
+        return lease
+
+    def heartbeat_job_lease(
+        self,
+        job_id: str,
+        lease_id: str,
+        *,
+        lease_seconds: int = 300,
+        metadata: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        if not self.store.get_job(job_id):
+            raise KeyError(f"unknown job_id: {job_id}")
+        lease = self.store.heartbeat_job_lease(
+            lease_id,
+            lease_seconds=lease_seconds,
+            metadata=metadata,
+        )
+        if not lease:
+            raise RequestValidationError(f"active lease not found: {lease_id}")
+        self.store.add_event(
+            job_id,
+            "job_lease_heartbeat",
+            {"lease_id": lease_id, "worker_id": lease["worker_id"]},
+        )
+        return lease
+
+    def list_job_leases(self, job_id: str | None = None) -> list[dict[str, Any]]:
+        return self.store.list_job_leases(job_id=job_id)
+
+    def recover_stale_leases(self) -> dict[str, Any]:
+        recovered = self.store.recover_stale_leases()
+        return {"recovered": recovered, "count": len(recovered)}
+
     def record_cloud_dispatch(self, dispatch: CloudDispatchRecord) -> None:
         self.store.upsert_cloud_dispatch(asdict(dispatch))
+        lease = None
+        if dispatch.status == CloudDispatchStatus.SUBMITTED:
+            lease = self.store.acquire_job_lease(
+                dispatch.job_id,
+                dispatch.task_arn or dispatch.dispatch_id,
+                provider=dispatch.provider,
+                lease_seconds=900,
+                metadata={"dispatch_id": dispatch.dispatch_id, "mode": dispatch.mode},
+            )
         self.store.add_event(
             dispatch.job_id,
             "cloud_dispatch_submitted"
@@ -1538,6 +1667,7 @@ class AgentCloudFlow:
                 "mode": dispatch.mode,
                 "status": dispatch.status.value,
                 "task_arn": dispatch.task_arn,
+                "lease_id": lease["lease_id"] if lease else None,
             },
         )
 
@@ -1568,8 +1698,51 @@ class AgentCloudFlow:
             {"callback_type": callback_type.value, "status": status, **payload},
         )
         if callback_type == WorkerCallbackType.STARTED:
+            lease = self.store.acquire_job_lease(
+                job_id,
+                str(payload.get("worker_id") or payload.get("task_arn") or "callback-worker"),
+                provider=str(payload.get("provider") or self.execution_provider.status().provider),
+                lease_seconds=int(payload.get("lease_seconds", 300)),
+                metadata=payload,
+            )
+            self.store.add_event(
+                job_id,
+                "job_lease_acquired",
+                {"lease_id": lease["lease_id"], "worker_id": lease["worker_id"]},
+            )
             self.store.update_job(job_id, status=JobStatus.RUNNING)
+        elif callback_type == WorkerCallbackType.HEARTBEAT:
+            lease_id = payload.get("lease_id")
+            lease = self.store.get_job_lease(str(lease_id)) if lease_id else (
+                self.store.get_active_job_lease(job_id)
+            )
+            if lease:
+                renewed = self.store.heartbeat_job_lease(
+                    lease["lease_id"],
+                    lease_seconds=int(payload.get("lease_seconds", 300)),
+                    metadata=payload,
+                )
+                self.store.add_event(
+                    job_id,
+                    "job_lease_heartbeat",
+                    {"lease_id": renewed["lease_id"] if renewed else lease["lease_id"]},
+                )
+        elif callback_type == WorkerCallbackType.COMPLETED:
+            lease = self.store.get_active_job_lease(job_id)
+            if lease:
+                self.store.finish_job_lease(
+                    lease["lease_id"],
+                    status="completed",
+                    metadata=payload,
+                )
         elif callback_type == WorkerCallbackType.FAILED:
+            lease = self.store.get_active_job_lease(job_id)
+            if lease:
+                self.store.finish_job_lease(
+                    lease["lease_id"],
+                    status="failed",
+                    metadata=payload,
+                )
             self.store.update_job(job_id, status=JobStatus.FAILED)
         return record
 
@@ -1602,8 +1775,16 @@ class AgentCloudFlow:
         routing_decision = job["routing_decision_json"]
         agent_result = self._empty_agent_result()
         evidence: dict[str, Any] = {}
+        lease: dict[str, Any] | None = None
 
         try:
+            lease = self.acquire_job_lease(
+                job_id,
+                worker_id=os.environ.get("AGENT_CLOUD_WORKER_ID", "local-runner"),
+                provider=self.execution_provider.status().provider,
+                lease_seconds=request.max_runtime_seconds + 60,
+                metadata={"mode": "run_job"},
+            )
             self._charge_budget(job_id, request, "dispatch", 64, "worker dispatch envelope")
             self.store.update_job(job_id, status=JobStatus.DISPATCHED)
             self.store.add_event(
@@ -1762,12 +1943,14 @@ class AgentCloudFlow:
             )
             if not all(base_gates.values()):
                 self.store.add_event(job_id, "policy_gate_result", base_gates)
-                return self._fail(
+                result = self._fail(
                     job_id,
                     agent_result,
                     base_gates,
                     "not deployed: policy gate failed",
                 )
+                self._finish_lease(lease, "failed", {"reason": "policy_gate_failed"})
+                return result
 
             preview = self.preview_publisher.publish(
                 workspace_repo,
@@ -1824,13 +2007,15 @@ class AgentCloudFlow:
             gates = run_artifact.policy_gate_results
             self.store.add_event(job_id, "policy_gate_result", gates)
             if not all(gates.values()):
-                return self._fail(
+                result = self._fail(
                     job_id,
                     agent_result,
                     gates,
                     "not deployed: policy gate failed",
                     evidence=evidence,
                 )
+                self._finish_lease(lease, "failed", {"reason": "policy_gate_failed"})
+                return result
 
             self.store.update_job(job_id, status=JobStatus.SYNCING)
             if request.repo_provider == RepoProvider.GITHUB:
@@ -1923,6 +2108,7 @@ class AgentCloudFlow:
                 result_json=asdict(result),
             )
             self._record_lab_run(job_id, result)
+            self._finish_lease(lease, "completed", {"status": "succeeded"})
             return result
         except BudgetExceededError as exc:
             gates = {
@@ -1934,10 +2120,13 @@ class AgentCloudFlow:
                 "deployment_policy": False,
             }
             self.store.add_event(job_id, "budget_exceeded", {"error": str(exc)})
-            return self._fail(job_id, agent_result, gates, "not deployed: budget exceeded")
+            result = self._fail(job_id, agent_result, gates, "not deployed: budget exceeded")
+            self._finish_lease(lease, "failed", {"reason": "budget_exceeded"})
+            return result
         except Exception as exc:
             self.store.add_event(job_id, "job_failed", {"error": str(exc)})
             self.store.update_job(job_id, status=JobStatus.FAILED)
+            self._finish_lease(lease, "failed", {"error": str(exc)})
             raise
 
     @staticmethod
@@ -2030,8 +2219,8 @@ class AgentCloudFlow:
             },
         }
 
-    @staticmethod
     def _promotion_decision(
+        self,
         status: JobStatus,
         agent_result: dict[str, Any],
         gates: dict[str, bool],
@@ -2047,6 +2236,7 @@ class AgentCloudFlow:
             "run_artifact": evidence.get("run_artifact"),
             "deployment_provider": evidence.get("deployment_provider"),
             "provenance": evidence.get("provenance"),
+            "promotion_evaluation": self._promotion_evaluation(evidence),
         }
         if status != JobStatus.SUCCEEDED:
             return PromotionDecision(
@@ -2080,6 +2270,35 @@ class AgentCloudFlow:
             ),
             evidence=base_evidence,
         )
+
+    def _promotion_evaluation(self, evidence: dict[str, Any]) -> dict[str, Any]:
+        candidate = {
+            "model_id": evidence.get("model_spec", {}).get("model_id"),
+            "agent_id": evidence.get("agent_spec", {}).get("agent_id"),
+            "harness_id": evidence.get("harness_spec", {}).get("harness_id"),
+        }
+        baseline = {
+            "model_id": "local-deterministic",
+            "agent_id": "repo-editor-v1",
+            "harness_id": "local-template",
+        }
+        leaderboard = self.lab_leaderboard(limit=200)
+        candidate_metrics = _leaderboard_metrics(leaderboard, candidate)
+        baseline_metrics = _leaderboard_metrics(leaderboard, baseline)
+        candidate_rate = candidate_metrics.get("promotion_rate", 0.0)
+        baseline_rate = baseline_metrics.get("promotion_rate", 0.0)
+        return {
+            "schema_version": "promotion-evaluation.v1",
+            "candidate": candidate,
+            "baseline": baseline,
+            "candidate_metrics": candidate_metrics,
+            "baseline_metrics": baseline_metrics,
+            "beats_or_matches_baseline": (
+                True if not baseline_metrics else candidate_rate >= baseline_rate
+            ),
+            "held_out_required": True,
+            "production_deploy_allowed": False,
+        }
 
     def _maybe_model_advice(
         self,
@@ -2186,6 +2405,20 @@ class AgentCloudFlow:
                 f"token budget exceeded: used {tokens_used} > budget {request.token_budget}"
             )
 
+    def _finish_lease(
+        self,
+        lease: dict[str, Any] | None,
+        status: str,
+        metadata: dict[str, Any],
+    ) -> None:
+        if not lease:
+            return
+        self.store.finish_job_lease(
+            lease["lease_id"],
+            status=status,
+            metadata=metadata,
+        )
+
     def _stored_result(self, job: dict[str, Any]) -> JobResult:
         result = job["result_json"]
         if not result:
@@ -2249,29 +2482,29 @@ class AgentCloudFlow:
         if not job:
             return
         promotion = result.promotion_decision or {}
-        self.store.upsert_lab_run(
-            {
-                "job_id": job_id,
-                "user_id": job["user_id"],
-                "repo_provider": job["repo_provider"],
-                "model_id": job["model_id"],
-                "agent_id": job["agent_id"],
-                "harness_id": job["harness_id"],
-                "job_status": result.status.value,
-                "promotion_status": promotion.get("status", "unknown"),
-                "promotion_reason": promotion.get("reason", ""),
-                "deployment_status": result.deployment_status,
-                "changed_files_count": len(result.changed_files),
-                "tests_failed_count": len(result.tests_failed),
-                "token_budget": job["token_budget"],
-                "tokens_used": self.store.budget_tokens_used(job_id),
-                "created_at": job["created_at"],
-                "updated_at": job["updated_at"],
-            }
-        )
+        run = {
+            "job_id": job_id,
+            "user_id": job["user_id"],
+            "repo_provider": job["repo_provider"],
+            "model_id": job["model_id"],
+            "agent_id": job["agent_id"],
+            "harness_id": job["harness_id"],
+            "job_status": result.status.value,
+            "promotion_status": promotion.get("status", "unknown"),
+            "promotion_reason": promotion.get("reason", ""),
+            "deployment_status": result.deployment_status,
+            "changed_files_count": len(result.changed_files),
+            "tests_failed_count": len(result.tests_failed),
+            "token_budget": job["token_budget"],
+            "tokens_used": self.store.budget_tokens_used(job_id),
+            "created_at": job["created_at"],
+            "updated_at": job["updated_at"],
+        }
+        self.store.upsert_lab_run(run)
+        self.lab_warehouse.upsert_run(run)
 
     def _routing_decision(self, request: JobRequest) -> RoutingDecision:
-        return self.router.recommend(request, self.store.lab_leaderboard())
+        return self.router.recommend(request, self.lab_leaderboard())
 
     def _seed_analysis_cases(self) -> None:
         for case in default_analysis_cases():
@@ -2333,3 +2566,17 @@ class AgentCloudFlow:
             ]
         )
         return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
+
+
+def _leaderboard_metrics(
+    leaderboard: list[dict[str, Any]],
+    target: dict[str, Any],
+) -> dict[str, Any]:
+    for row in leaderboard:
+        if (
+            row.get("model_id") == target.get("model_id")
+            and row.get("agent_id") == target.get("agent_id")
+            and row.get("harness_id") == target.get("harness_id")
+        ):
+            return row
+    return {}

@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 from contextlib import closing
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -213,6 +214,26 @@ class JobStore:
                 )
                 conn.execute(
                     """
+                    CREATE TABLE IF NOT EXISTS job_leases (
+                        lease_id TEXT PRIMARY KEY,
+                        job_id TEXT NOT NULL,
+                        worker_id TEXT NOT NULL,
+                        provider TEXT NOT NULL,
+                        status TEXT NOT NULL,
+                        attempt INTEGER NOT NULL,
+                        acquired_at TEXT NOT NULL,
+                        heartbeat_at TEXT NOT NULL,
+                        expires_at TEXT NOT NULL,
+                        released_at TEXT,
+                        metadata_json TEXT NOT NULL DEFAULT '{}',
+                        created_at TEXT NOT NULL,
+                        updated_at TEXT NOT NULL,
+                        FOREIGN KEY(job_id) REFERENCES jobs(job_id)
+                    )
+                    """
+                )
+                conn.execute(
+                    """
                     CREATE TABLE IF NOT EXISTS worker_callbacks (
                         id INTEGER PRIMARY KEY AUTOINCREMENT,
                         job_id TEXT NOT NULL,
@@ -282,6 +303,18 @@ class JobStore:
                     """
                     CREATE INDEX IF NOT EXISTS idx_lab_runs_updated_at
                     ON lab_runs (updated_at)
+                    """
+                )
+                conn.execute(
+                    """
+                    CREATE INDEX IF NOT EXISTS idx_job_leases_job_status
+                    ON job_leases (job_id, status)
+                    """
+                )
+                conn.execute(
+                    """
+                    CREATE INDEX IF NOT EXISTS idx_job_leases_expires_at
+                    ON job_leases (expires_at)
                     """
                 )
 
@@ -755,6 +788,195 @@ class JobStore:
             rows = conn.execute(query, params).fetchall()
         return [self._cloud_dispatch_row(row) for row in rows]
 
+    def acquire_job_lease(
+        self,
+        job_id: str,
+        worker_id: str,
+        *,
+        provider: str,
+        lease_seconds: int,
+        metadata: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        now = utc_now()
+        lease_id = self._lease_id(job_id, worker_id, now)
+        expires_at = self._lease_expiry(lease_seconds)
+        with closing(self._connect()) as conn:
+            with conn:
+                attempt_row = conn.execute(
+                    """
+                    SELECT COALESCE(MAX(attempt), 0) + 1 AS attempt
+                    FROM job_leases
+                    WHERE job_id = ?
+                    """,
+                    (job_id,),
+                ).fetchone()
+                attempt = int(attempt_row["attempt"])
+                conn.execute(
+                    """
+                    UPDATE job_leases
+                    SET status = 'superseded', released_at = ?, updated_at = ?
+                    WHERE job_id = ? AND status = 'active'
+                    """,
+                    (now, now, job_id),
+                )
+                conn.execute(
+                    """
+                    INSERT INTO job_leases (
+                        lease_id, job_id, worker_id, provider, status, attempt,
+                        acquired_at, heartbeat_at, expires_at, released_at,
+                        metadata_json, created_at, updated_at
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        lease_id,
+                        job_id,
+                        worker_id,
+                        provider,
+                        "active",
+                        attempt,
+                        now,
+                        now,
+                        expires_at,
+                        None,
+                        json.dumps(metadata or {}, sort_keys=True),
+                        now,
+                        now,
+                    ),
+                )
+        return self.get_job_lease(lease_id) or {}
+
+    def heartbeat_job_lease(
+        self,
+        lease_id: str,
+        *,
+        lease_seconds: int,
+        metadata: dict[str, Any] | None = None,
+    ) -> dict[str, Any] | None:
+        now = utc_now()
+        expires_at = self._lease_expiry(lease_seconds)
+        with closing(self._connect()) as conn:
+            with conn:
+                conn.execute(
+                    """
+                    UPDATE job_leases
+                    SET heartbeat_at = ?, expires_at = ?, metadata_json = ?, updated_at = ?
+                    WHERE lease_id = ? AND status = 'active'
+                    """,
+                    (
+                        now,
+                        expires_at,
+                        json.dumps(metadata or {}, sort_keys=True),
+                        now,
+                        lease_id,
+                    ),
+                )
+        return self.get_job_lease(lease_id)
+
+    def finish_job_lease(
+        self,
+        lease_id: str,
+        *,
+        status: str,
+        metadata: dict[str, Any] | None = None,
+    ) -> dict[str, Any] | None:
+        now = utc_now()
+        with closing(self._connect()) as conn:
+            with conn:
+                conn.execute(
+                    """
+                    UPDATE job_leases
+                    SET status = ?, released_at = ?, metadata_json = ?, updated_at = ?
+                    WHERE lease_id = ?
+                    """,
+                    (
+                        status,
+                        now,
+                        json.dumps(metadata or {}, sort_keys=True),
+                        now,
+                        lease_id,
+                    ),
+                )
+        return self.get_job_lease(lease_id)
+
+    def get_job_lease(self, lease_id: str) -> dict[str, Any] | None:
+        with closing(self._connect()) as conn:
+            row = conn.execute(
+                "SELECT * FROM job_leases WHERE lease_id = ?",
+                (lease_id,),
+            ).fetchone()
+        return self._lease_row(row) if row else None
+
+    def get_active_job_lease(self, job_id: str) -> dict[str, Any] | None:
+        with closing(self._connect()) as conn:
+            row = conn.execute(
+                """
+                SELECT * FROM job_leases
+                WHERE job_id = ? AND status = 'active'
+                ORDER BY heartbeat_at DESC
+                LIMIT 1
+                """,
+                (job_id,),
+            ).fetchone()
+        return self._lease_row(row) if row else None
+
+    def list_job_leases(self, job_id: str | None = None) -> list[dict[str, Any]]:
+        query = "SELECT * FROM job_leases"
+        params: list[Any] = []
+        if job_id:
+            query += " WHERE job_id = ?"
+            params.append(job_id)
+        query += " ORDER BY created_at DESC"
+        with closing(self._connect()) as conn:
+            rows = conn.execute(query, params).fetchall()
+        return [self._lease_row(row) for row in rows]
+
+    def recover_stale_leases(self, *, requeue: bool = True) -> list[dict[str, Any]]:
+        now = utc_now()
+        with closing(self._connect()) as conn:
+            stale_rows = conn.execute(
+                """
+                SELECT * FROM job_leases
+                WHERE status = 'active' AND expires_at < ?
+                ORDER BY expires_at
+                """,
+                (now,),
+            ).fetchall()
+            stale = [self._lease_row(row) for row in stale_rows]
+            with conn:
+                for lease in stale:
+                    conn.execute(
+                        """
+                        UPDATE job_leases
+                        SET status = 'stale', released_at = ?, updated_at = ?
+                        WHERE lease_id = ?
+                        """,
+                        (now, now, lease["lease_id"]),
+                    )
+                    if requeue:
+                        conn.execute(
+                            """
+                            UPDATE jobs
+                            SET status = ?, updated_at = ?
+                            WHERE job_id = ?
+                              AND status IN (?, ?)
+                            """,
+                            (
+                                JobStatus.QUEUED.value,
+                                now,
+                                lease["job_id"],
+                                JobStatus.DISPATCHED.value,
+                                JobStatus.RUNNING.value,
+                            ),
+                        )
+        for lease in stale:
+            self.add_event(
+                lease["job_id"],
+                "job_lease_recovered",
+                {"lease_id": lease["lease_id"], "worker_id": lease["worker_id"]},
+            )
+        return stale
+
     def add_worker_callback(
         self,
         job_id: str,
@@ -1216,3 +1438,19 @@ class JobStore:
         data = dict(row)
         data["job_ids"] = json.loads(data.pop("job_ids_json"))
         return data
+
+    @staticmethod
+    def _lease_row(row: Any) -> dict[str, Any]:
+        data = dict(row)
+        data["metadata"] = json.loads(data.pop("metadata_json"))
+        return data
+
+    @staticmethod
+    def _lease_id(job_id: str, worker_id: str, created_at: str) -> str:
+        seed = f"{job_id}|{worker_id}|{created_at}"
+        return "lease_" + hashlib.sha256(seed.encode("utf-8")).hexdigest()[:16]
+
+    @staticmethod
+    def _lease_expiry(lease_seconds: int) -> str:
+        seconds = max(5, min(lease_seconds, 86_400))
+        return (datetime.now(UTC) + timedelta(seconds=seconds)).isoformat()

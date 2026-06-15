@@ -8,6 +8,7 @@ from pathlib import Path
 from urllib.error import URLError
 from urllib.request import Request, urlopen
 
+from cloud_agent_service.lab_warehouse import LabWarehouse
 from cloud_agent_service.pipeline import AgentCloudFlow
 from cloud_agent_service.store import JobStore
 
@@ -15,10 +16,12 @@ from cloud_agent_service.store import JobStore
 def build_flow() -> AgentCloudFlow:
     runtime_root = Path(os.environ.get("AGENT_CLOUD_RUNTIME", ".runtime"))
     store = JobStore.from_env(runtime_root)
+    lab_warehouse = LabWarehouse.from_env(runtime_root)
     return AgentCloudFlow(
         store=store,
         workspace_root=os.environ.get("AGENT_CLOUD_WORKSPACES", str(runtime_root / "workspaces")),
         artifacts_dir=os.environ.get("AGENT_CLOUD_ARTIFACTS", str(runtime_root / "artifacts")),
+        lab_warehouse=lab_warehouse,
     )
 
 
@@ -41,18 +44,24 @@ def main() -> None:
         raise SystemExit("--job-id, AGENT_JOB_ID, or --claim-next is required")
 
     flow = build_flow()
+    worker_id = os.environ.get("AGENT_CLOUD_WORKER_ID", "cloud_agent_service.worker")
     if args.job_id:
         _post_callback(
             args.status_callback_url,
             "started",
             "running",
-            {"worker": "cloud_agent_service.worker"},
+            {"worker": "cloud_agent_service.worker", "worker_id": worker_id},
         )
     try:
         result = flow.run_next_queued_job() if args.claim_next else flow.run_job(args.job_id)
     except Exception as exc:
         if args.job_id:
-            _post_callback(args.status_callback_url, "failed", "failed", {"error": str(exc)})
+            _post_callback(
+                args.status_callback_url,
+                "failed",
+                "failed",
+                {"error": str(exc), "worker_id": worker_id},
+            )
         raise
     payload = {"status": "idle"} if result is None else asdict(result)
     if result is not None:
@@ -60,7 +69,7 @@ def main() -> None:
             args.status_callback_url,
             "completed",
             result.status.value,
-            {"job_id": result.job_id, "tests_failed": result.tests_failed},
+            {"job_id": result.job_id, "tests_failed": result.tests_failed, "worker_id": worker_id},
         )
     if args.result_path:
         Path(args.result_path).parent.mkdir(parents=True, exist_ok=True)

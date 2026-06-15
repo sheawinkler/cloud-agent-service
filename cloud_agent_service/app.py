@@ -12,6 +12,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
 from cloud_agent_service.cloud_dispatch import EcsDispatchPlanner
+from cloud_agent_service.lab_warehouse import LabWarehouse
 from cloud_agent_service.models import (
     DeploymentPolicy,
     JobRequest,
@@ -91,13 +92,27 @@ class WorkerCallbackPayload(BaseModel):
     payload: dict[str, Any] = Field(default_factory=dict)
 
 
+class LeaseAcquirePayload(BaseModel):
+    worker_id: str = "api-worker"
+    provider: str | None = None
+    lease_seconds: int = 300
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class LeaseHeartbeatPayload(BaseModel):
+    lease_seconds: int = 300
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
 def build_flow() -> AgentCloudFlow:
     runtime_root = Path(os.environ.get("AGENT_CLOUD_RUNTIME", ".runtime"))
     store = JobStore.from_env(runtime_root)
+    lab_warehouse = LabWarehouse.from_env(runtime_root)
     return AgentCloudFlow(
         store=store,
         workspace_root=os.environ.get("AGENT_CLOUD_WORKSPACES", str(runtime_root / "workspaces")),
         artifacts_dir=os.environ.get("AGENT_CLOUD_ARTIFACTS", str(runtime_root / "artifacts")),
+        lab_warehouse=lab_warehouse,
     )
 
 
@@ -146,7 +161,7 @@ def cloud_status() -> dict[str, Any]:
 
 @app.get("/integrations/database/status")
 def database_status() -> dict[str, Any]:
-    return asdict(flow.store.status())
+    return flow.database_status()
 
 
 @app.get("/integrations/deploy/status")
@@ -157,6 +172,17 @@ def deployment_provider_status() -> dict[str, Any]:
 @app.get("/integrations/execution/status")
 def execution_provider_status() -> dict[str, Any]:
     return asdict(flow.execution_provider.status())
+
+
+@app.get("/integrations/live/status")
+def live_provider_status() -> dict[str, Any]:
+    return {
+        "github": asdict(flow.github_status()),
+        "cloud": ecs_dispatch_planner.status(),
+        "database": flow.database_status(),
+        "deployment": asdict(flow.deployer.status()),
+        "execution": asdict(flow.execution_provider.status()),
+    }
 
 
 @app.get("/models")
@@ -340,7 +366,7 @@ def list_lab_runs(
     promotion_status: PromotionStatus | None = None,
 ) -> dict[str, Any]:
     return {
-        "runs": flow.store.list_lab_runs(
+        "runs": flow.list_lab_runs(
             limit=limit,
             model_id=model_id,
             agent_id=agent_id,
@@ -352,12 +378,22 @@ def list_lab_runs(
 
 @app.get("/lab/summary")
 def lab_summary() -> dict[str, Any]:
-    return flow.store.lab_summary()
+    return flow.lab_summary()
 
 
 @app.get("/lab/leaderboard")
 def lab_leaderboard(limit: int = 50) -> dict[str, Any]:
-    return {"leaderboard": flow.store.lab_leaderboard(limit=limit)}
+    return {"leaderboard": flow.lab_leaderboard(limit=limit)}
+
+
+@app.get("/lab/warehouse/status")
+def lab_warehouse_status() -> dict[str, Any]:
+    return flow.lab_warehouse_status()
+
+
+@app.post("/lab/warehouse/refresh")
+def refresh_lab_warehouse() -> dict[str, Any]:
+    return flow.refresh_lab_warehouse()
 
 
 @app.get("/lab", response_class=HTMLResponse)
@@ -462,6 +498,56 @@ def list_worker_callbacks(job_id: str) -> dict[str, Any]:
     if not flow.store.get_job(job_id):
         raise HTTPException(status_code=404, detail="job not found")
     return {"callbacks": flow.list_worker_callbacks(job_id)}
+
+
+@app.get("/jobs/leases")
+def list_all_job_leases() -> dict[str, Any]:
+    return {"leases": flow.list_job_leases()}
+
+
+@app.post("/jobs/leases/recover-stale")
+def recover_stale_job_leases() -> dict[str, Any]:
+    return flow.recover_stale_leases()
+
+
+@app.get("/jobs/{job_id}/leases")
+def list_job_leases(job_id: str) -> dict[str, Any]:
+    if not flow.store.get_job(job_id):
+        raise HTTPException(status_code=404, detail="job not found")
+    return {"leases": flow.list_job_leases(job_id=job_id)}
+
+
+@app.post("/jobs/{job_id}/leases/acquire")
+def acquire_job_lease(job_id: str, payload: LeaseAcquirePayload) -> dict[str, Any]:
+    try:
+        return flow.acquire_job_lease(
+            job_id,
+            worker_id=payload.worker_id,
+            provider=payload.provider,
+            lease_seconds=payload.lease_seconds,
+            metadata=payload.metadata,
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="job not found") from exc
+
+
+@app.post("/jobs/{job_id}/leases/{lease_id}/heartbeat")
+def heartbeat_job_lease(
+    job_id: str,
+    lease_id: str,
+    payload: LeaseHeartbeatPayload,
+) -> dict[str, Any]:
+    try:
+        return flow.heartbeat_job_lease(
+            job_id,
+            lease_id,
+            lease_seconds=payload.lease_seconds,
+            metadata=payload.metadata,
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="job not found") from exc
+    except RequestValidationError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
 @app.get("/jobs/{job_id}/artifacts")
@@ -716,6 +802,14 @@ def _lab_dashboard_html() -> str:
         <pre id="database"></pre>
       </div>
       <div class="panel">
+        <h2>Lab Warehouse</h2>
+        <pre id="warehouse"></pre>
+      </div>
+      <div class="panel">
+        <h2>Live Providers</h2>
+        <pre id="liveProviders"></pre>
+      </div>
+      <div class="panel">
         <h2>Deployment</h2>
         <pre id="deployment"></pre>
       </div>
@@ -739,6 +833,10 @@ def _lab_dashboard_html() -> str:
       <div class="panel">
         <h2>Provenance</h2>
         <pre id="provenance">No run selected.</pre>
+      </div>
+      <div class="panel">
+        <h2>Worker Leases</h2>
+        <pre id="leases"></pre>
       </div>
     </section>
     <section>
@@ -809,12 +907,24 @@ def _lab_dashboard_html() -> str:
         fetch('/lab/leaderboard').then((response) => response.json()),
         fetch('/lab/runs?limit=50').then((response) => response.json())
       ]);
-      const [cloud, database, deployment, execution, cases] = await Promise.all([
+      const [
+        cloud,
+        database,
+        warehouse,
+        liveProviders,
+        deployment,
+        execution,
+        cases,
+        leases
+      ] = await Promise.all([
         fetch('/integrations/cloud/status').then((response) => response.json()),
         fetch('/integrations/database/status').then((response) => response.json()),
+        fetch('/lab/warehouse/status').then((response) => response.json()),
+        fetch('/integrations/live/status').then((response) => response.json()),
         fetch('/integrations/deploy/status').then((response) => response.json()),
         fetch('/integrations/execution/status').then((response) => response.json()),
-        fetch('/analysis/cases').then((response) => response.json())
+        fetch('/analysis/cases').then((response) => response.json()),
+        fetch('/jobs/leases').then((response) => response.json())
       ]);
       const statuses = summary.by_promotion_status || {};
       document.getElementById('summary').innerHTML = [
@@ -827,8 +937,12 @@ def _lab_dashboard_html() -> str:
       ).join('');
       document.getElementById('cloud').textContent = JSON.stringify(cloud, null, 2);
       document.getElementById('database').textContent = JSON.stringify(database, null, 2);
+      document.getElementById('warehouse').textContent = JSON.stringify(warehouse, null, 2);
+      document.getElementById('liveProviders').textContent =
+        JSON.stringify(liveProviders, null, 2);
       document.getElementById('deployment').textContent = JSON.stringify(deployment, null, 2);
       document.getElementById('execution').textContent = JSON.stringify(execution, null, 2);
+      document.getElementById('leases').textContent = JSON.stringify(leases, null, 2);
       document.getElementById('cases').innerHTML = (cases.cases || []).map((row) => `
         <tr>
           <td>${escapeHtml(row.case_id)}</td>

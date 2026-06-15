@@ -8,9 +8,11 @@ from pathlib import Path
 from unittest.mock import patch
 
 from cloud_agent_service.cloud_dispatch import EcsDispatchPlanner
+from cloud_agent_service.database import production_database_status
 from cloud_agent_service.dataset_export import SlmDatasetExporter
 from cloud_agent_service.execution import ExecutionProvider
 from cloud_agent_service.harness_registry import HarnessRegistry
+from cloud_agent_service.lab_warehouse import LabWarehouse
 from cloud_agent_service.models import (
     CloudDispatchStatus,
     DeploymentPolicy,
@@ -150,6 +152,12 @@ class CloudAgentServiceFlowTests(unittest.TestCase):
             self.assertTrue(result.policy_gate_results["transcript_policy"])
             self.assertTrue(result.policy_gate_results["security_profile_policy"])
             self.assertEqual("promote", result.promotion_decision["status"])
+            self.assertEqual(
+                "promotion-evaluation.v1",
+                result.promotion_decision["evidence"]["promotion_evaluation"][
+                    "schema_version"
+                ],
+            )
 
             workspace_index = root / "workspaces" / job_id / "repo" / "index.html"
             self.assertIn('data-agent="buy-button"', workspace_index.read_text(encoding="utf-8"))
@@ -205,6 +213,12 @@ class CloudAgentServiceFlowTests(unittest.TestCase):
             self.assertEqual("local-template", leaderboard[0]["harness_id"])
             self.assertEqual(1, leaderboard[0]["promote_count"])
             self.assertEqual(1.0, leaderboard[0]["promotion_rate"])
+            self.assertTrue(
+                any(
+                    lease["status"] == "completed"
+                    for lease in flow.list_job_leases(job_id)
+                )
+            )
 
             expected_events = {
                 "job_created",
@@ -1071,6 +1085,52 @@ class CloudAgentServiceFlowTests(unittest.TestCase):
             self.assertEqual(2, len(callbacks))
             self.assertEqual("started", callbacks[0]["callback_type"])
             self.assertEqual(JobStatus.RUNNING.value, flow.store.get_job(job_id)["status"])
+            leases = flow.list_job_leases(job_id)
+            self.assertEqual(1, len(leases))
+            self.assertEqual("active", leases[0]["status"])
+
+    def test_job_lease_lifecycle_and_stale_recovery(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = self._build_repo(root)
+            flow = self._build_flow(root)
+            job_id = flow.create_job(
+                JobRequest(
+                    prompt="For my shopping website, create a buy button.",
+                    repo_path=str(repo),
+                )
+            )
+
+            lease = flow.acquire_job_lease(
+                job_id,
+                worker_id="worker-a",
+                lease_seconds=60,
+                metadata={"stage": "start"},
+            )
+            renewed = flow.heartbeat_job_lease(
+                job_id,
+                lease["lease_id"],
+                lease_seconds=60,
+                metadata={"stage": "heartbeat"},
+            )
+            flow.store.update_job(job_id, status=JobStatus.RUNNING)
+            with flow.store._connect() as conn:
+                conn.execute(
+                    """
+                    UPDATE job_leases
+                    SET expires_at = '2000-01-01T00:00:00+00:00'
+                    WHERE lease_id = ?
+                    """,
+                    (lease["lease_id"],),
+                )
+
+            recovered = flow.recover_stale_leases()
+
+            self.assertEqual(lease["lease_id"], renewed["lease_id"])
+            self.assertEqual(1, recovered["count"])
+            self.assertEqual("queued", flow.store.get_job(job_id)["status"])
+            stale = flow.store.get_job_lease(lease["lease_id"])
+            self.assertEqual("stale", stale["status"])
 
     def test_cloud_dispatch_status_reports_missing_ecs_configuration(self):
         with patch.dict("os.environ", {}, clear=True):
@@ -1104,6 +1164,47 @@ class CloudAgentServiceFlowTests(unittest.TestCase):
             self.assertEqual(JobStatus.SUCCEEDED, result.status)
             self.assertEqual("promote", result.promotion_decision["status"])
             self.assertEqual(1, flow.store.lab_summary()["total_runs"])
+
+    def test_lab_warehouse_materializes_runs_when_duckdb_available(self):
+        if importlib.util.find_spec("duckdb") is None:
+            self.skipTest("duckdb package is not installed")
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = self._build_repo(root)
+            flow = AgentCloudFlow(
+                store=JobStore(root / "jobs.sqlite3"),
+                workspace_root=root / "workspaces",
+                artifacts_dir=root / "artifacts",
+                lab_warehouse=LabWarehouse(root / "lab.duckdb"),
+            )
+
+            flow.run_job(
+                flow.create_job(
+                    JobRequest(
+                        prompt="For my shopping website, create a buy button.",
+                        repo_path=str(repo),
+                        deploy_policy=DeploymentPolicy.LOCAL,
+                    )
+                )
+            )
+
+            self.assertEqual(1, flow.lab_warehouse_status()["materialized_runs"])
+            self.assertEqual(1, flow.lab_summary()["total_runs"])
+            self.assertEqual(1, flow.lab_leaderboard()[0]["promote_count"])
+
+    def test_postgres_production_database_status_is_contract_only(self):
+        with patch.dict(
+            "os.environ",
+            {
+                "AGENT_CLOUD_PRODUCTION_DB_PROVIDER": "postgres",
+                "AGENT_CLOUD_POSTGRES_DSN": "",
+            },
+        ):
+            status = production_database_status()
+
+            self.assertEqual("postgres", status.provider)
+            self.assertEqual("production-contract", status.mode)
+            self.assertIn("AGENT_CLOUD_POSTGRES_DSN", status.missing)
 
     def test_vercel_preview_provider_records_dry_run_contract(self):
         with tempfile.TemporaryDirectory() as tmp, patch.dict(

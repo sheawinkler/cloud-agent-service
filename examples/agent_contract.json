@@ -422,6 +422,24 @@
           "path": "artifacts/provenance/demo-job-001/manifest.json",
           "sha256": "3333333333333333333333333333333333333333333333333333333333333333",
           "bytes": 2048
+        },
+        "promotion_evaluation": {
+          "schema_version": "promotion-evaluation.v1",
+          "candidate": {
+            "model_id": "local-deterministic",
+            "agent_id": "repo-editor-v1",
+            "harness_id": "local-template"
+          },
+          "baseline": {
+            "model_id": "local-deterministic",
+            "agent_id": "repo-editor-v1",
+            "harness_id": "local-template"
+          },
+          "candidate_metrics": {},
+          "baseline_metrics": {},
+          "beats_or_matches_baseline": true,
+          "held_out_required": true,
+          "production_deploy_allowed": false
         }
       }
     }

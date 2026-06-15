@@ -34,6 +34,10 @@ class ProjectArtifactTests(unittest.TestCase):
         self.assertIn("deployment_provider", payload["final_result"]["evidence"])
         self.assertIn("provenance", payload["final_result"]["evidence"])
         self.assertIn("promotion_decision", payload["final_result"])
+        self.assertIn(
+            "promotion_evaluation",
+            payload["final_result"]["promotion_decision"]["evidence"],
+        )
 
     def test_demo_local_flow_succeeds(self):
         result = subprocess.run(

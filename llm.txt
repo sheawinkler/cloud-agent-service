@@ -19,8 +19,9 @@ leaderboard.
 Analysis cases, experiment reports, SLM dataset export, router decisions,
 worker callbacks, artifact refs, experiment batches, and dataset lineage turn
 the control loop into a small Language Model Lab surface.
-DuckDB, Vercel preview deployment, execution-provider status, and provenance
-manifests are now provider-layer contracts around that loop.
+DuckDB lab warehouse, Postgres production-target readiness, worker leases,
+Vercel preview deployment, execution-provider status, and provenance manifests
+are now provider-layer contracts around that loop.
 
 Important boundary:
 The current implementation calls AWS only through `/jobs/<job_id>/cloud-dispatch`
@@ -36,9 +37,10 @@ before live execution can be claimed.
 The default local-template adapter is deterministic. The pi-coding-agent
 adapter is opt-in via AGENT_CLOUD_ENABLE_PI_CODING_AGENT or
 AGENT_CLOUD_ENABLE_EXTERNAL_HARNESS plus AGENT_CLOUD_PI_CODING_AGENT_CMD.
-SQLite is still the default store. DuckDB is opt-in with
-AGENT_CLOUD_DB_PROVIDER=duckdb and is best treated as an embedded local lab
-backend, not managed multi-writer production state.
+SQLite is still the default operational store. DuckDB is the lab warehouse when
+available and can also be used for local operational-store testing with
+AGENT_CLOUD_DB_PROVIDER=duckdb. Postgres/RDS is the production target contract,
+not an active SQL adapter in this MVP.
 Vercel preview deployment is a dry-run contract unless
 AGENT_CLOUD_DEPLOYMENT_PROVIDER=vercel_preview,
 AGENT_CLOUD_VERCEL_DEPLOY_ENABLED=1, and VERCEL_TOKEN are configured.
@@ -54,8 +56,9 @@ wired and verified.
 Primary files:
 - app.py: FastAPI API.
 - pipeline.py: end-to-end application flow.
-- store.py: SQLite job and event storage.
-- database.py: SQLite/DuckDB embedded store adapter.
+- store.py: operational job, event, callback, lease, and lab-run storage.
+- database.py: SQLite/DuckDB embedded adapter plus Postgres target readiness.
+- lab_warehouse.py: DuckDB materialized lab read model.
 - orchestrator.py: local queue and runner.
 - worker.py: one-job container entry point with optional HTTP callbacks.
 - cloud_dispatch.py: ECS/Fargate dry-run dispatch request builder and env-gated
@@ -105,11 +108,14 @@ Monitor commands:
 - curl -sS http://127.0.0.1:8000/datasets/exports/<export_id>
 - curl -sS http://127.0.0.1:8000/jobs/<job_id>/artifacts
 - curl -sS http://127.0.0.1:8000/jobs/<job_id>/worker-callbacks
+- curl -sS http://127.0.0.1:8000/jobs/<job_id>/leases
 - curl -sS http://127.0.0.1:8000/jobs/<job_id>/provenance
 - curl -sS http://127.0.0.1:8000/models
 - curl -sS http://127.0.0.1:8000/harnesses
 - curl -sS http://127.0.0.1:8000/integrations/cloud/status
 - curl -sS http://127.0.0.1:8000/integrations/database/status
+- curl -sS http://127.0.0.1:8000/integrations/live/status
+- curl -sS http://127.0.0.1:8000/lab/warehouse/status
 - curl -sS http://127.0.0.1:8000/integrations/deploy/status
 - curl -sS http://127.0.0.1:8000/integrations/execution/status
 
@@ -142,6 +148,8 @@ Do not:
   submit endpoint returned a submitted dispatch.
 - Treat indexed harness IDs as live adapter execution without worker proof.
 - Treat DuckDB as production database infrastructure.
+- Treat the Postgres/RDS readiness contract as an active adapter without a
+  verified SQL implementation.
 - Treat Vercel preview/Sandbox contracts as live without env flags and evidence.
 - Commit runtime SQLite databases, generated workspaces, or artifacts.
 - Add package dependencies without updating the allowlist and tests.

@@ -43,6 +43,7 @@ def evaluate_buy_button() -> dict[str, object]:
         workspace_index = root / "workspaces" / job_id / "repo" / "index.html"
         rendered_change = workspace_index.read_text(encoding="utf-8")
         provenance_path = result.evidence.get("provenance", {}).get("path", "")
+        leases = flow.list_job_leases(job_id)
         checks = {
             "job_succeeded": result.status == JobStatus.SUCCEEDED,
             "buy_button_present": 'data-agent="buy-button"' in rendered_change,
@@ -66,6 +67,17 @@ def evaluate_buy_button() -> dict[str, object]:
             ),
             "provenance_manifest_created": bool(provenance_path)
             and Path(provenance_path).exists(),
+            "lab_warehouse_materialized": (
+                flow.lab_warehouse_status()["materialized_runs"] >= 1
+                or flow.lab_summary()["total_runs"] >= 1
+            ),
+            "worker_lease_recorded": any(lease["status"] == "completed" for lease in leases),
+            "promotion_evaluation_created": (
+                result.promotion_decision.get("evidence", {})
+                .get("promotion_evaluation", {})
+                .get("schema_version")
+                == "promotion-evaluation.v1"
+            ),
             "promotion_decision_created": result.promotion_decision.get("status")
             in {"promote", "needs_review"},
         }

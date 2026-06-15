@@ -42,6 +42,20 @@ def database_status(db_path: str | Path, provider: str | None = None) -> Databas
         notes.append(
             "DuckDB is opt-in and best suited for local lab analytics, not multi-writer queues."
         )
+    if selected == "postgres":
+        mode = "production-contract"
+        if not os.environ.get("AGENT_CLOUD_POSTGRES_DSN"):
+            configured = False
+            missing.append("AGENT_CLOUD_POSTGRES_DSN")
+        try:
+            importlib.import_module("psycopg")
+        except ModuleNotFoundError:
+            configured = False
+            missing.append("psycopg")
+        notes.append(
+            "Postgres is the production operational-store target; this MVP exposes "
+            "readiness but keeps SQLite as the default local write path."
+        )
     return DatabaseStatus(
         provider=selected,
         path=str(db_path),
@@ -58,6 +72,8 @@ def normalize_provider(provider: str) -> str:
         return "sqlite"
     if selected == "duckdb":
         return "duckdb"
+    if selected in {"postgres", "postgresql", "rds_postgres"}:
+        return "postgres"
     raise ValueError(f"unsupported database provider: {provider}")
 
 
@@ -67,7 +83,18 @@ def connect_database(db_path: str | Path, provider: str):
         conn = sqlite3.connect(db_path)
         conn.row_factory = sqlite3.Row
         return conn
+    if selected == "postgres":
+        raise RuntimeError(
+            "Postgres is exposed as a production readiness contract in this MVP; "
+            "use sqlite for the operational store until the SQL adapter is enabled."
+        )
     return DuckDbConnection(db_path)
+
+
+def production_database_status() -> DatabaseStatus:
+    provider = os.environ.get("AGENT_CLOUD_PRODUCTION_DB_PROVIDER", "postgres")
+    db_path = os.environ.get("AGENT_CLOUD_POSTGRES_DSN", "postgres://<not-configured>")
+    return database_status(db_path, provider)
 
 
 class DuckDbRow(dict[str, Any]):
