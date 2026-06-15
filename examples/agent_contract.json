@@ -156,7 +156,9 @@
       "promotion_decision": "dict[str, object]",
       "harness_adapter_result": "dict[str, object]",
       "run_artifact": "dict[str, object]",
-      "artifact_refs": "list[dict[str, object]]"
+      "artifact_refs": "list[dict[str, object]]",
+      "deployment_provider": "dict[str, object]",
+      "provenance": "dict[str, object]"
     }
   },
   "budget_ledger_example": [
@@ -351,6 +353,21 @@
           "bytes": 256
         }
       ],
+      "deployment_provider": {
+        "provider": "local_mock",
+        "status": "ready: manual approval required",
+        "url": null,
+        "artifact_path": null,
+        "metadata": {
+          "policy": "manual"
+        }
+      },
+      "provenance": {
+        "schema_version": "provenance-manifest.v1",
+        "path": "artifacts/provenance/demo-job-001/manifest.json",
+        "sha256": "3333333333333333333333333333333333333333333333333333333333333333",
+        "bytes": 2048
+      },
       "repo_profile": {
         "package_manager": null,
         "framework": "html",
@@ -390,6 +407,21 @@
           "transcript_path": "artifacts/runs/demo-job-001/transcript.txt",
           "diff_path": "artifacts/runs/demo-job-001/diff.patch",
           "complete": true
+        },
+        "deployment_provider": {
+          "provider": "local_mock",
+          "status": "ready: manual approval required",
+          "url": null,
+          "artifact_path": null,
+          "metadata": {
+            "policy": "manual"
+          }
+        },
+        "provenance": {
+          "schema_version": "provenance-manifest.v1",
+          "path": "artifacts/provenance/demo-job-001/manifest.json",
+          "sha256": "3333333333333333333333333333333333333333333333333333333333333333",
+          "bytes": 2048
         }
       }
     }

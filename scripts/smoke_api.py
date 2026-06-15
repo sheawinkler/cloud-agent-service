@@ -93,6 +93,32 @@ def run_smoke(base_url: str, repo_path: str) -> dict[str, Any]:
         response=cloud,
     )
 
+    database = client.get("/integrations/database/status")
+    record(
+        results,
+        "database_status",
+        database["provider"] in {"sqlite", "duckdb"} and "mode" in database,
+        response=database,
+    )
+
+    deployment = client.get("/integrations/deploy/status")
+    record(
+        results,
+        "deployment_status",
+        deployment["provider"] in {"local_mock", "vercel_preview"}
+        and "live_submit_enabled" in deployment,
+        response=deployment,
+    )
+
+    execution = client.get("/integrations/execution/status")
+    record(
+        results,
+        "execution_status",
+        execution["provider"] in {"local", "ecs_fargate", "vercel_sandbox"}
+        and "mode" in execution,
+        response=execution,
+    )
+
     models = client.get("/models")
     record(
         results,
@@ -229,9 +255,23 @@ def run_smoke(base_url: str, repo_path: str) -> dict[str, Any]:
         run["status"] == "succeeded"
         and run["deployment_status"] == "ready: manual approval required"
         and run["tests_failed"] == []
-        and run.get("evidence", {}).get("run_artifact", {}).get("complete") is True,
+        and run.get("evidence", {}).get("run_artifact", {}).get("complete") is True
+        and run.get("evidence", {}).get("deployment_provider", {}).get("provider")
+        in {"local_mock", "vercel_preview"}
+        and run.get("evidence", {}).get("provenance", {}).get("schema_version")
+        == "provenance-manifest.v1",
         status=run["status"],
         deployment_status=run["deployment_status"],
+    )
+
+    provenance = client.get(f"/jobs/{job_id}/provenance")
+    record(
+        results,
+        "provenance",
+        provenance["provenance"]["schema_version"] == "provenance-manifest.v1"
+        and provenance["manifest"]["job_id"] == job_id
+        and "source_fingerprints" in provenance["manifest"],
+        provenance=provenance["provenance"],
     )
 
     budget = client.get(f"/jobs/{job_id}/budget")
@@ -332,6 +372,10 @@ def run_smoke(base_url: str, repo_path: str) -> dict[str, Any]:
         "<title>Agent Lab</title>" in lab_ui
         and "Recent Runs" in lab_ui
         and "Cloud Worker" in lab_ui
+        and "Database" in lab_ui
+        and "Deployment" in lab_ui
+        and "Execution" in lab_ui
+        and "Provenance" in lab_ui
         and "Analysis Cases" in lab_ui
         and "Dataset Export" in lab_ui,
         length=len(lab_ui),

@@ -5,6 +5,7 @@ description = "MVP for a containerized cloud coding-agent service."
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
+    "duckdb>=1.0,<2",
     "fastapi>=0.115,<1",
     "pydantic>=2,<3",
     "PyJWT[crypto]>=2.8,<3",

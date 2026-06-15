@@ -7,6 +7,8 @@ clone and push a review branch to `origin`. GitHub repo jobs use the real GitHub
 App clone, branch push, and PR path only when app credentials are configured.
 Each repo update is also a minimal lab run: `ModelSpec` + `AgentSpec` +
 `HarnessSpec` + evidence -> `PromotionDecision`.
+DuckDB, Vercel preview deployment, and non-local execution providers are opt-in
+contracts unless their explicit env flags and credentials are configured.
 
 ## Boundaries
 
@@ -34,6 +36,14 @@ Each repo update is also a minimal lab run: `ModelSpec` + `AgentSpec` +
   base before live cloud dispatch; local defaults intentionally skip callbacks.
 - Treat artifact storage as local unless `AGENT_CLOUD_ARTIFACT_PROVIDER` and
   related env are configured.
+- Treat SQLite as the default job store. Use DuckDB only with
+  `AGENT_CLOUD_DB_PROVIDER=duckdb`; do not present it as production multi-writer
+  infrastructure.
+- Treat Vercel preview deployment as a recorded contract unless
+  `AGENT_CLOUD_DEPLOYMENT_PROVIDER=vercel_preview`,
+  `AGENT_CLOUD_VERCEL_DEPLOY_ENABLED=1`, and `VERCEL_TOKEN` are configured.
+- Treat Vercel Sandbox execution as a status/contract until a live sandbox
+  adapter is implemented and verified.
 - Do not persist secrets in docs, logs, SQLite data, test fixtures, or examples.
 - Do not commit or preserve runtime artifacts from `.runtime/`.
 - Docker Compose runtime state lives in the `runtime_data` Docker volume.
@@ -46,10 +56,14 @@ Each repo update is also a minimal lab run: `ModelSpec` + `AgentSpec` +
   memory, model/agent registry, budget charging, deterministic coding action,
   tests, gates, preview proof, promotion decision, mock PR sync, and mock deploy.
 - `store.py`: SQLite job and event persistence.
+- `database.py`: SQLite/DuckDB embedded database adapter.
 - `orchestrator.py`: local queue plus persisted queued-job runner.
 - `worker.py`: container-friendly one-job or claim-next entry point.
 - `cloud_dispatch.py`: AWS ECS/Fargate dry-run dispatch request builder and
   env-gated live submitter.
+- `deployment.py`: local mock and Vercel preview deployment provider contracts.
+- `execution.py`: local/ECS/Vercel Sandbox execution-provider status contracts.
+- `provenance.py`: successful-run provenance manifest writer.
 - `artifact_store.py`: local/S3 artifact-reference indexing.
 - `harness_registry.py`: pre-indexed agent harness registry, top-20 slice, and
   custom harness contract support.
@@ -127,6 +141,7 @@ curl -sS http://127.0.0.1:8000/jobs/<job_id>
 curl -sS http://127.0.0.1:8000/jobs/<job_id>/worker-payload
 curl -sS http://127.0.0.1:8000/jobs/<job_id>/artifacts
 curl -sS http://127.0.0.1:8000/jobs/<job_id>/worker-callbacks
+curl -sS http://127.0.0.1:8000/jobs/<job_id>/provenance
 curl -sS http://127.0.0.1:8000/jobs/<job_id>/budget
 curl -sS http://127.0.0.1:8000/jobs/<job_id>/events
 curl -sS http://127.0.0.1:8000/lab/runs
@@ -139,6 +154,9 @@ curl -sS http://127.0.0.1:8000/models
 curl -sS http://127.0.0.1:8000/harnesses
 curl -sS http://127.0.0.1:8000/auth/status
 curl -sS http://127.0.0.1:8000/integrations/cloud/status
+curl -sS http://127.0.0.1:8000/integrations/database/status
+curl -sS http://127.0.0.1:8000/integrations/deploy/status
+curl -sS http://127.0.0.1:8000/integrations/execution/status
 curl -sS http://127.0.0.1:8000/jobs/<job_id>/cloud-dispatch-plan
 python -m cloud_agent_service.worker --claim-next
 ```

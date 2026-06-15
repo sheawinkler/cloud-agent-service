@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 import json
-import sqlite3
+import os
 from contextlib import closing
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from cloud_agent_service.database import DatabaseStatus, connect_database, database_status
 from cloud_agent_service.models import JobStatus
 
 
@@ -15,15 +16,27 @@ def utc_now() -> str:
 
 
 class JobStore:
-    def __init__(self, db_path: str | Path) -> None:
+    def __init__(self, db_path: str | Path, provider: str | None = None) -> None:
         self.db_path = Path(db_path)
+        self.provider = provider or os.environ.get("AGENT_CLOUD_DB_PROVIDER", "sqlite")
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self._init_schema()
 
-    def _connect(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(self.db_path)
-        conn.row_factory = sqlite3.Row
-        return conn
+    @classmethod
+    def from_env(cls, runtime_root: str | Path) -> JobStore:
+        root = Path(runtime_root)
+        provider = os.environ.get("AGENT_CLOUD_DB_PROVIDER", "sqlite")
+        default_name = "jobs.duckdb" if provider.strip().lower() == "duckdb" else "jobs.sqlite3"
+        return cls(
+            os.environ.get("AGENT_CLOUD_DB", str(root / default_name)),
+            provider=provider,
+        )
+
+    def status(self) -> DatabaseStatus:
+        return database_status(self.db_path, self.provider)
+
+    def _connect(self):
+        return connect_database(self.db_path, self.provider)
 
     def _init_schema(self) -> None:
         with closing(self._connect()) as conn:
@@ -272,7 +285,7 @@ class JobStore:
                     """
                 )
 
-    def _ensure_job_columns(self, conn: sqlite3.Connection) -> None:
+    def _ensure_job_columns(self, conn: Any) -> None:
         columns = {
             row["name"]
             for row in conn.execute("PRAGMA table_info(jobs)").fetchall()
@@ -296,7 +309,7 @@ class JobStore:
             if name not in columns:
                 conn.execute(f"ALTER TABLE jobs ADD COLUMN {name} {definition}")
 
-    def _ensure_lab_run_columns(self, conn: sqlite3.Connection) -> None:
+    def _ensure_lab_run_columns(self, conn: Any) -> None:
         columns = {
             row["name"]
             for row in conn.execute("PRAGMA table_info(lab_runs)").fetchall()
@@ -308,7 +321,7 @@ class JobStore:
             if name not in columns:
                 conn.execute(f"ALTER TABLE lab_runs ADD COLUMN {name} {definition}")
 
-    def _ensure_dataset_export_columns(self, conn: sqlite3.Connection) -> None:
+    def _ensure_dataset_export_columns(self, conn: Any) -> None:
         columns = {
             row["name"]
             for row in conn.execute("PRAGMA table_info(dataset_exports)").fetchall()
@@ -1168,14 +1181,14 @@ class JobStore:
         return value
 
     @staticmethod
-    def _row_to_dict(row: sqlite3.Row) -> dict[str, Any]:
+    def _row_to_dict(row: Any) -> dict[str, Any]:
         data = dict(row)
         data["result_json"] = json.loads(data["result_json"])
         data["routing_decision_json"] = json.loads(data["routing_decision_json"])
         return data
 
     @staticmethod
-    def _analysis_case_row(row: sqlite3.Row) -> dict[str, Any]:
+    def _analysis_case_row(row: Any) -> dict[str, Any]:
         data = dict(row)
         data["task_ids"] = json.loads(data.pop("task_ids_json"))
         data["model_ids"] = json.loads(data.pop("model_ids_json"))
@@ -1186,20 +1199,20 @@ class JobStore:
         return data
 
     @staticmethod
-    def _cloud_dispatch_row(row: sqlite3.Row) -> dict[str, Any]:
+    def _cloud_dispatch_row(row: Any) -> dict[str, Any]:
         data = dict(row)
         data["request"] = json.loads(data.pop("request_json"))
         data["response"] = json.loads(data.pop("response_json"))
         return data
 
     @staticmethod
-    def _worker_callback_row(row: sqlite3.Row) -> dict[str, Any]:
+    def _worker_callback_row(row: Any) -> dict[str, Any]:
         data = dict(row)
         data["payload"] = json.loads(data.pop("payload_json"))
         return data
 
     @staticmethod
-    def _analysis_batch_row(row: sqlite3.Row) -> dict[str, Any]:
+    def _analysis_batch_row(row: Any) -> dict[str, Any]:
         data = dict(row)
         data["job_ids"] = json.loads(data.pop("job_ids_json"))
         return data

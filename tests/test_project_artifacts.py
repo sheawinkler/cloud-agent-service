@@ -31,6 +31,8 @@ class ProjectArtifactTests(unittest.TestCase):
         self.assertIn("security_profile", payload["final_result"]["evidence"])
         self.assertIn("run_artifact", payload["final_result"]["evidence"])
         self.assertIn("artifact_refs", payload["final_result"]["evidence"])
+        self.assertIn("deployment_provider", payload["final_result"]["evidence"])
+        self.assertIn("provenance", payload["final_result"]["evidence"])
         self.assertIn("promotion_decision", payload["final_result"])
 
     def test_demo_local_flow_succeeds(self):

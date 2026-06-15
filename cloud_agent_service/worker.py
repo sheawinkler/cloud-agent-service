@@ -14,7 +14,7 @@ from cloud_agent_service.store import JobStore
 
 def build_flow() -> AgentCloudFlow:
     runtime_root = Path(os.environ.get("AGENT_CLOUD_RUNTIME", ".runtime"))
-    store = JobStore(os.environ.get("AGENT_CLOUD_DB", str(runtime_root / "jobs.sqlite3")))
+    store = JobStore.from_env(runtime_root)
     return AgentCloudFlow(
         store=store,
         workspace_root=os.environ.get("AGENT_CLOUD_WORKSPACES", str(runtime_root / "workspaces")),
