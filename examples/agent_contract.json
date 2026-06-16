@@ -110,7 +110,8 @@
       "ruff",
       "mypy",
       "GitPython",
-      "openai"
+      "openai",
+      "psycopg"
     ],
     "allowed_shell_commands": [
       "git",
@@ -142,6 +143,12 @@
       "fallback": false
     },
     "status_callback_url": "local://jobs/demo-job-001",
+    "callback_auth": {
+      "mode": "unsigned-local",
+      "configured": false,
+      "header": "x-agent-cloud-callback-token",
+      "token": ""
+    },
     "output_schema": {
       "changed_files": "list[str]",
       "commands_run": "list[str]",
@@ -267,6 +274,12 @@
           "model_bakeoff_repo_edit"
         ],
         "fallback": false
+      },
+      "review_forge": {
+        "provider": "local_mock",
+        "mode": "mock-pr-artifact",
+        "target": null,
+        "configured": true
       },
       "security_profile": {
         "profile_id": "local-template.locked-down.v1",

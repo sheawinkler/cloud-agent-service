@@ -24,9 +24,11 @@ class ProjectArtifactTests(unittest.TestCase):
         self.assertIn("security_profile", payload["job_payload"])
         self.assertIn("routing_policy", payload["job_payload"])
         self.assertIn("routing_decision", payload["job_payload"])
+        self.assertIn("callback_auth", payload["job_payload"])
         self.assertEqual("local-template", payload["job_payload"]["harness_id"])
         self.assertIn("harness_spec", payload["final_result"]["evidence"])
         self.assertIn("routing_decision", payload["final_result"]["evidence"])
+        self.assertIn("review_forge", payload["final_result"]["evidence"])
         self.assertIn("harness_adapter_result", payload["final_result"]["evidence"])
         self.assertIn("security_profile", payload["final_result"]["evidence"])
         self.assertIn("run_artifact", payload["final_result"]["evidence"])
@@ -101,6 +103,21 @@ class ProjectArtifactTests(unittest.TestCase):
 
         self.assertIn("def export_dataset", content)
         self.assertIn("if __name__ == \"__main__\"", content)
+
+    def test_lab_in_a_box_demo_succeeds(self):
+        result = subprocess.run(
+            ["python3", "scripts/demo_lab_in_a_box.py"],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        payload = json.loads(result.stdout)
+
+        self.assertEqual("lab-in-a-box-demo.v1", payload["schema_version"])
+        self.assertTrue(payload["ok"])
+        self.assertTrue(payload["checks"]["dataset_exported"])
+        self.assertTrue(payload["checks"]["router_recommended"])
 
 
 if __name__ == "__main__":

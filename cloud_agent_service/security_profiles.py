@@ -58,6 +58,21 @@ class HarnessSecurityRegistry:
                     "OPENAI_API_KEY=[^\\s]+",
                 ],
             )
+        if harness.harness_id == "openai-codex-cli":
+            return HarnessSecurityProfile(
+                profile_id="openai-codex-cli.responses-edit-adapter.v1",
+                harness_id=harness.harness_id,
+                network_policy="egress-openai-only",
+                allowed_commands=[],
+                readable_paths=["repo/**"],
+                writable_paths=["repo/**", "artifacts/runs/**"],
+                secret_env_vars=["OPENAI_API_KEY"],
+                max_runtime_seconds=max_runtime_seconds,
+                log_redaction_patterns=[
+                    "sk-[A-Za-z0-9_-]+",
+                    "OPENAI_API_KEY=[^\\s]+",
+                ],
+            )
         if harness.category == HarnessCategory.CLOUD_CODING_AGENT:
             network_policy = "managed-provider-only"
         elif harness.category in {

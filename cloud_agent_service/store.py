@@ -8,7 +8,12 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-from cloud_agent_service.database import DatabaseStatus, connect_database, database_status
+from cloud_agent_service.database import (
+    DatabaseStatus,
+    connect_database,
+    database_status,
+    normalize_provider,
+)
 from cloud_agent_service.models import JobStatus
 
 
@@ -18,16 +23,25 @@ def utc_now() -> str:
 
 class JobStore:
     def __init__(self, db_path: str | Path, provider: str | None = None) -> None:
+        self.provider = normalize_provider(
+            provider or os.environ.get("AGENT_CLOUD_DB_PROVIDER", "sqlite")
+        )
         self.db_path = Path(db_path)
-        self.provider = provider or os.environ.get("AGENT_CLOUD_DB_PROVIDER", "sqlite")
-        self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        if self.provider != "postgres":
+            self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self._init_schema()
 
     @classmethod
     def from_env(cls, runtime_root: str | Path) -> JobStore:
         root = Path(runtime_root)
-        provider = os.environ.get("AGENT_CLOUD_DB_PROVIDER", "sqlite")
-        default_name = "jobs.duckdb" if provider.strip().lower() == "duckdb" else "jobs.sqlite3"
+        provider = normalize_provider(os.environ.get("AGENT_CLOUD_DB_PROVIDER", "sqlite"))
+        if provider == "postgres":
+            return cls(
+                os.environ.get("AGENT_CLOUD_DB")
+                or os.environ.get("AGENT_CLOUD_POSTGRES_DSN", ""),
+                provider=provider,
+            )
+        default_name = "jobs.duckdb" if provider == "duckdb" else "jobs.sqlite3"
         return cls(
             os.environ.get("AGENT_CLOUD_DB", str(root / default_name)),
             provider=provider,

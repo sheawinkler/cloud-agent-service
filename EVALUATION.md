@@ -30,13 +30,17 @@ the deploy boundary when evidence is weak.
 | Lab router | New work can be routed from evidence instead of hard-coded defaults. | `/lab/router/recommend` returns a `RoutingDecision`; default `fixed` behavior remains unchanged. |
 | Cloud worker execution | ECS submission is possible only behind explicit env gates. | `/cloud-dispatch-plan` stays dry-run; `/cloud-dispatch` persists submitted or failed dispatch records. |
 | Worker callbacks | Cloud workers can report progress without trusting logs alone. | `/worker-callback` records started, heartbeat, artifact, completed, and failed callbacks. |
+| Callback auth | Worker callbacks can be signed without storing raw tokens in dispatch records. | `AGENT_CLOUD_WORKER_CALLBACK_SECRET` enables `x-agent-cloud-callback-token`; plans and records redact the token. |
 | Worker leases | Active workers have recoverable control-plane state. | `/jobs/<id>/leases` shows owner, provider, heartbeat, expiry, and status. |
 | Artifact storage | Run artifacts have durable refs independent of local file paths. | `/jobs/<id>/artifacts` returns provider, URI, digest, and size. |
 | Experiment batches | Analysis experiments can fan out as bounded batches. | `/analysis/experiments/<id>/batch` records batch status and linked job IDs. |
 | Dataset lineage | SLM exports include split policy, redaction policy, fingerprints, and holdout guardrails. | Dataset manifest lineage marks holdout as evaluation-only. |
-| Database provider | Operational writes, lab analytics, and production target are distinct. | `/integrations/database/status` reports SQLite operational state, DuckDB lab warehouse, and Postgres readiness. |
+| Database provider | Operational writes, lab analytics, and production target are distinct. | `/integrations/database/status` reports SQLite operational state, DuckDB lab warehouse, and optional Postgres adapter readiness. |
 | Deployment provider | Deploy behavior is a provider contract instead of a hard-coded string. | `/integrations/deploy/status` reports local mock or Vercel preview mode. |
 | Execution provider | Worker execution target is explicit. | `/integrations/execution/status` reports local, ECS/Fargate, or Vercel Sandbox contract mode. |
+| Forge provider | Git review output is not locked to GitHub. | `/integrations/forge/status` reports generic Git plus GitHub/GitLab/Bitbucket/Gitea review capabilities. |
+| OpenAI edit adapter | A live model-backed edit path exists behind explicit gates. | `openai-codex-cli` can use `AGENT_CLOUD_ENABLE_OPENAI_EDIT_ADAPTER` plus `OPENAI_API_KEY`; otherwise it falls back to local contract execution. |
+| Lab appliance | The lab can be demonstrated end to end without external services. | `scripts/demo_lab_in_a_box.py` seeds a repo, runs a lab job, exports JSONL, refreshes the warehouse, and reports router/leaderboard state. |
 | Provenance | Successful runs leave a compact manifest tying evidence to hashes. | `/jobs/<id>/provenance` returns manifest path, digest, deployment record, and source fingerprints. |
 | Safety | Failed tests or policies stop sync/deploy. | Gate failure returns `failed` before mock PR/deploy. |
 | Preview proof | Reviewers get inspectable evidence before deploy. | Final result includes preview URL, preview artifact, and browser-proof checks. |
@@ -70,6 +74,7 @@ the deploy boundary when evidence is weak.
 - Router confidence and fallback rate.
 - Cloud dispatch submit success/failure rate.
 - Worker callback heartbeat age.
+- Callback auth configured rate and rejected callback count.
 - Artifact reference completeness by job.
 - Experiment batch completion/failure counts.
 - Database provider in use by run environment.
@@ -78,6 +83,8 @@ the deploy boundary when evidence is weak.
 - Provenance manifest completion and hash availability.
 - Generic Git sync success rate.
 - GitHub App sync success rate.
+- Forge-native review coverage by provider.
+- Lab appliance demo success rate.
 - Average changed files per job.
 - Average token budget requested per job.
 - Token budget consumed per stage.
@@ -319,12 +326,12 @@ The service should be considered not production-ready until real deployment
 integration, durable cloud storage, and verified ECS/Fargate worker operation
 replace the local defaults. The model/agent/harness lab layer records run
 metadata and promotion decisions, and `lab_runs` makes those decisions queryable
-for comparison; the OpenAI Responses path is present but disabled unless
-configured. Ranked and custom harness IDs are dispatch contracts, not proof that
-third-party CLIs or managed agents execute, until corresponding worker adapters
-are built and verified. DuckDB is an embedded local/lab backend, not managed
-multi-writer production state. Vercel preview and Vercel Sandbox modes are
-provider contracts unless their live env flags and credentials are configured
-and verified. Generic Git sync is provider agnostic, while GitHub PR
-creation is implemented only for `repo_provider=github` when app credentials are
-configured and verified.
+for comparison; OpenAI Responses planning and edit paths are disabled unless
+explicitly configured. Ranked and custom harness IDs are dispatch contracts, not
+proof that third-party CLIs or managed agents execute, until corresponding
+worker adapters are built and verified. DuckDB is an embedded local/lab backend,
+not managed multi-writer production state. Postgres is available only through the
+optional DSN-backed adapter. Vercel preview and Vercel Sandbox modes are provider
+contracts unless their live env flags and credentials are configured and
+verified. Generic Git sync is provider agnostic, while provider-native PR/MR
+creation is implemented only for GitHub App jobs today.

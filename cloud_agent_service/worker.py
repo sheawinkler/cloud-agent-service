@@ -8,6 +8,7 @@ from pathlib import Path
 from urllib.error import URLError
 from urllib.request import Request, urlopen
 
+from cloud_agent_service.callback_auth import CALLBACK_TOKEN_HEADER
 from cloud_agent_service.lab_warehouse import LabWarehouse
 from cloud_agent_service.pipeline import AgentCloudFlow
 from cloud_agent_service.store import JobStore
@@ -38,6 +39,10 @@ def main() -> None:
         "--status-callback-url",
         default=os.environ.get("AGENT_CLOUD_STATUS_CALLBACK_URL", ""),
     )
+    parser.add_argument(
+        "--callback-token",
+        default=os.environ.get("AGENT_CLOUD_WORKER_CALLBACK_TOKEN", ""),
+    )
     args = parser.parse_args()
 
     if not args.job_id and not args.claim_next:
@@ -48,6 +53,7 @@ def main() -> None:
     if args.job_id:
         _post_callback(
             args.status_callback_url,
+            args.callback_token,
             "started",
             "running",
             {"worker": "cloud_agent_service.worker", "worker_id": worker_id},
@@ -58,6 +64,7 @@ def main() -> None:
         if args.job_id:
             _post_callback(
                 args.status_callback_url,
+                args.callback_token,
                 "failed",
                 "failed",
                 {"error": str(exc), "worker_id": worker_id},
@@ -67,6 +74,7 @@ def main() -> None:
     if result is not None:
         _post_callback(
             args.status_callback_url,
+            args.callback_token,
             "completed",
             result.status.value,
             {"job_id": result.job_id, "tests_failed": result.tests_failed, "worker_id": worker_id},
@@ -83,6 +91,7 @@ def main() -> None:
 
 def _post_callback(
     status_callback_url: str,
+    callback_token: str,
     callback_type: str,
     status: str,
     payload: dict[str, object],
@@ -97,10 +106,13 @@ def _post_callback(
             "payload": payload,
         }
     ).encode("utf-8")
+    headers = {"content-type": "application/json"}
+    if callback_token:
+        headers[CALLBACK_TOKEN_HEADER] = callback_token
     request = Request(
         url,
         data=body,
-        headers={"content-type": "application/json"},
+        headers=headers,
         method="POST",
     )
     try:

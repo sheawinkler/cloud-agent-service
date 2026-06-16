@@ -17,10 +17,11 @@ The current layer adds analysis cases, experiment reports, redacted SLM dataset
 exports, and a leaderboard-backed router for Language Model Lab comparisons.
 It also adds an env-gated ECS submit path, worker callbacks, artifact storage
 references, experiment batches, dataset lineage, and a denser lab dashboard.
-The current provider layer adds a DuckDB-backed lab warehouse, a Postgres/RDS
-production database readiness contract, worker leases/heartbeats, deployment
-provider contracts, a Vercel preview contract, execution-provider status, and
-provenance manifests for successful runs.
+The current provider layer adds a DuckDB-backed lab warehouse, an optional
+Postgres/RDS operational adapter, signed worker-callback contracts, worker
+leases/heartbeats, provider-agnostic forge status, Vercel preview and execution
+provider contracts, an opt-in OpenAI edit adapter, and provenance manifests for
+successful runs.
 
 Local repo jobs still use mock PR and deployment artifacts. Generic Git jobs
 clone from `git_url` and push an agent branch back to `origin`. GitHub repo jobs
@@ -80,9 +81,11 @@ Monitoring:
   policy gates, preview artifacts, local GitHub sync mock, and local deployment
   mock.
 - `store.py`: operational job, event, callback, lease, and lab-run persistence.
-- `database.py`: SQLite default, DuckDB compatibility, and Postgres target
-  readiness contracts.
+- `database.py`: SQLite default, DuckDB compatibility, and optional Postgres
+  operational adapter.
 - `lab_warehouse.py`: DuckDB materialized read model for lab analytics.
+- `callback_auth.py`: job-scoped HMAC token contract for worker callbacks.
+- `forge.py`: provider-agnostic Git/GitHub/GitLab/Bitbucket/Gitea review status.
 - `orchestrator.py`: local in-memory queue plus persisted queued-job runner.
 - `worker.py`: container-friendly single-job or claim-next entry point with
   optional HTTP worker callbacks.
@@ -95,8 +98,8 @@ Monitoring:
 - `artifact_store.py`: local/S3 artifact-reference indexing.
 - `harness_registry.py`: curated agent harness index, top-20 slice, and custom
   harness contract support.
-- `harness_adapters.py`: adapter ABI plus deterministic local and opt-in Pi
-  coding-agent adapter execution.
+- `harness_adapters.py`: adapter ABI plus deterministic local, opt-in Pi, and
+  opt-in OpenAI edit adapter execution.
 - `security_profiles.py`: per-harness command, secret, path, network, and
   runtime security contracts.
 - `artifact_schema.py`: replayable run artifact, transcript, diff, and artifact
@@ -248,6 +251,14 @@ Workers can post progress to `/jobs/<job_id>/worker-callback`. The worker CLI
 uses `AGENT_CLOUD_STATUS_CALLBACK_URL` when it is an HTTP URL and silently
 skips callbacks for local URLs. Completed run artifacts are indexed through the
 artifact storage abstraction and exposed at `/jobs/<job_id>/artifacts`.
+Set `AGENT_CLOUD_WORKER_CALLBACK_SECRET` to require the
+`x-agent-cloud-callback-token` HMAC header on worker callbacks. Worker payloads
+and ECS submit requests include the token, while dry-run plans and persisted
+dispatch records redact it.
+
+`GET /integrations/cloud/e2e-status` reports whether ECS submit, signed
+callbacks, execution provider, artifact storage, and worker leases are ready for
+a live cloud-worker run. It does not submit a task.
 
 ## Simple Demo
 
@@ -271,6 +282,16 @@ For the full payload:
 ```bash
 ./demo.sh --json
 ```
+
+Run the self-contained Language Model Lab appliance demo:
+
+```bash
+python3 scripts/demo_lab_in_a_box.py
+```
+
+It seeds a small repo, runs a baseline job, records an analysis experiment,
+exports redacted SLM JSONL, refreshes the lab warehouse when available, and
+prints the leaderboard/router proof.
 
 ## Local Run
 
@@ -353,6 +374,10 @@ curl -sS http://127.0.0.1:8000/jobs/<job_id>/leases
 curl -sS http://127.0.0.1:8000/jobs/<job_id>/provenance
 curl -sS http://127.0.0.1:8000/integrations/database/status
 curl -sS http://127.0.0.1:8000/integrations/live/status
+curl -sS http://127.0.0.1:8000/integrations/forge/status
+curl -sS http://127.0.0.1:8000/integrations/callback-auth/status
+curl -sS http://127.0.0.1:8000/integrations/cloud/e2e-status
+curl -sS http://127.0.0.1:8000/lab/appliance/status
 curl -sS http://127.0.0.1:8000/lab/warehouse/status
 curl -sS http://127.0.0.1:8000/integrations/deploy/status
 curl -sS http://127.0.0.1:8000/integrations/execution/status
@@ -404,8 +429,9 @@ queries. It is not a replacement for managed multi-writer production state.
 
 The production database target is Postgres/RDS. `/integrations/database/status`
 reports the current operational store, the DuckDB lab warehouse, and the
-Postgres readiness contract. A real Postgres SQL adapter is intentionally
-separate from this local MVP boundary.
+Postgres adapter target. `AGENT_CLOUD_DB_PROVIDER=postgres` requires
+`AGENT_CLOUD_POSTGRES_DSN` and the `psycopg` runtime; SQLite remains the default
+local queue/store.
 
 Record a Vercel preview deployment contract without live submit:
 
@@ -657,9 +683,12 @@ The MVP is still cloud-ready rather than fully cloud-native:
 - local repo copy by default
 - generic Git clone/sync for provider-agnostic remotes
 - GitHub App clone/PR sync only when credentials exist
+- GitLab, Bitbucket, and Gitea are represented as forge status contracts until
+  provider-native review adapters are added
 - SQLite queued-job claim instead of SQS
 - local Docker/worker contract instead of ECS/Fargate
-- local SQLite instead of managed Postgres/DynamoDB
+- local SQLite by default; Postgres/RDS requires a configured DSN and managed
+  database
 - local mock PR artifact for local jobs; pushed review ref for generic Git jobs;
   real GitHub PR path for GitHub jobs
 - local mock deployment artifact instead of AWS deploy

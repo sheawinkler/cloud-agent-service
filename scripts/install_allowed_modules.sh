@@ -6,7 +6,7 @@ if [[ $# -eq 0 ]]; then
   exit 0
 fi
 
-allowed_modules="requests httpx pydantic pytest ruff mypy GitPython openai"
+allowed_modules="requests httpx pydantic pytest ruff mypy GitPython openai psycopg"
 
 for module in "$@"; do
   if [[ " ${allowed_modules} " != *" ${module} "* ]]; then
@@ -18,4 +18,3 @@ done
 python3 -m venv .venv
 ./.venv/bin/python -m pip install --upgrade pip
 ./.venv/bin/python -m pip install "$@"
-

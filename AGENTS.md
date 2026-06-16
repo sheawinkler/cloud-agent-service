@@ -11,6 +11,8 @@ DuckDB is the lab warehouse when available; SQLite remains the default
 operational job store. Vercel preview deployment and non-local execution
 providers are opt-in contracts unless their explicit env flags and credentials
 are configured.
+Postgres, signed callbacks, provider-native forge reviews, and external model
+edit adapters are opt-in and must be verified before claiming live behavior.
 
 ## Boundaries
 
@@ -20,6 +22,9 @@ are configured.
   agent branch, and return a review ref rather than a provider-native PR.
 - Treat `repo_provider=github` as a real GitHub App path; require
   `/integrations/github/status` to report configured before claiming it is live.
+- Treat `/integrations/forge/status` as the forge capability source. GitLab,
+  Bitbucket, and Gitea are status contracts until provider-native review
+  creation adapters are implemented and verified.
 - Treat `local://preview/<job_id>/<file>` as a local preview artifact, not a
   hosted internet URL.
 - Treat `local-deterministic` as the current deterministic model spec; do not
@@ -29,6 +34,10 @@ are configured.
   default deterministic harness. Ranked and `custom:<name>` harness IDs are
   indexed for dispatch routing, but do not execute arbitrary third-party CLIs
   unless the worker image or adapter actually implements that harness.
+- Treat `openai-codex-cli` execution as live only when
+  `AGENT_CLOUD_ENABLE_OPENAI_EDIT_ADAPTER` or
+  `AGENT_CLOUD_ENABLE_EXTERNAL_HARNESS` is truthy and `OPENAI_API_KEY` is
+  configured. Otherwise it is a contract/fallback path.
 - Treat `deployed: local mock deployment recorded` as a local artifact, not a
   production deployment.
 - Treat `/jobs/<job_id>/cloud-dispatch-plan` as dry-run. Treat
@@ -36,14 +45,18 @@ are configured.
   `AGENT_CLOUD_ECS_SUBMIT_ENABLED=1` and AWS/ECS env is configured.
 - Set `AGENT_CLOUD_STATUS_CALLBACK_URL` to the externally reachable API `/jobs`
   base before live cloud dispatch; local defaults intentionally skip callbacks.
+- Set `AGENT_CLOUD_WORKER_CALLBACK_SECRET` before treating callbacks as
+  authenticated. Dry-run ECS plans and persisted dispatch records must redact the
+  callback token.
 - Treat artifact storage as local unless `AGENT_CLOUD_ARTIFACT_PROVIDER` and
   related env are configured.
 - Treat SQLite as the default operational job store. Treat DuckDB as the lab
   warehouse/read model unless `AGENT_CLOUD_DB_PROVIDER=duckdb` is explicitly set
   for local operational-store testing. Do not present DuckDB as production
   multi-writer infrastructure.
-- Treat Postgres/RDS as the production database target contract until a real SQL
-  adapter is implemented and verified.
+- Treat Postgres/RDS as optional production database infrastructure. It requires
+  `AGENT_CLOUD_DB_PROVIDER=postgres`, `AGENT_CLOUD_POSTGRES_DSN`, and a verified
+  `psycopg` runtime; SQLite remains the default local operational store.
 - Treat worker leases as the control-plane truth for active workers; callbacks
   are supporting evidence and heartbeat input.
 - Treat Vercel preview deployment as a recorded contract unless
@@ -63,7 +76,9 @@ are configured.
   memory, model/agent registry, budget charging, deterministic coding action,
   tests, gates, preview proof, promotion decision, mock PR sync, and mock deploy.
 - `store.py`: operational job, event, callback, lease, and lab-run persistence.
-- `database.py`: SQLite/DuckDB embedded adapter plus Postgres target readiness.
+- `database.py`: SQLite/DuckDB embedded adapter plus optional Postgres adapter.
+- `callback_auth.py`: worker callback HMAC token contract.
+- `forge.py`: generic Git and provider-native review capability contracts.
 - `lab_warehouse.py`: DuckDB materialized lab read model.
 - `orchestrator.py`: local queue plus persisted queued-job runner.
 - `worker.py`: container-friendly one-job or claim-next entry point.
@@ -76,7 +91,7 @@ are configured.
 - `harness_registry.py`: pre-indexed agent harness registry, top-20 slice, and
   custom harness contract support.
 - `harness_adapters.py`: harness adapter ABI, deterministic local adapter, and
-  opt-in Pi coding-agent CLI adapter.
+  opt-in Pi/OpenAI adapters.
 - `security_profiles.py`: per-harness command, secret, path, network, and
   runtime security contracts.
 - `artifact_schema.py`: replayable run artifact writer for transcript, diff,
@@ -162,10 +177,14 @@ curl -sS http://127.0.0.1:8000/models
 curl -sS http://127.0.0.1:8000/harnesses
 curl -sS http://127.0.0.1:8000/auth/status
 curl -sS http://127.0.0.1:8000/integrations/cloud/status
+curl -sS http://127.0.0.1:8000/integrations/cloud/e2e-status
+curl -sS http://127.0.0.1:8000/integrations/forge/status
+curl -sS http://127.0.0.1:8000/integrations/callback-auth/status
 curl -sS http://127.0.0.1:8000/integrations/database/status
 curl -sS http://127.0.0.1:8000/integrations/deploy/status
 curl -sS http://127.0.0.1:8000/integrations/execution/status
 curl -sS http://127.0.0.1:8000/jobs/<job_id>/cloud-dispatch-plan
+python3 scripts/demo_lab_in_a_box.py
 python -m cloud_agent_service.worker --claim-next
 ```
 
