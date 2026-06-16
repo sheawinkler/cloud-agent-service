@@ -23,6 +23,8 @@ DuckDB lab warehouse, optional Postgres adapter, signed callback contracts,
 worker leases, forge-provider status, Vercel preview deployment,
 execution-provider status, and provenance manifests are now provider-layer
 contracts around that loop.
+Readiness scorecards, a local doctor CLI, and signed/idempotent event intake
+make production cutover gaps and webhook-triggered jobs explicit.
 
 Important boundary:
 The current implementation calls AWS only through `/jobs/<job_id>/cloud-dispatch`
@@ -50,6 +52,8 @@ AGENT_CLOUD_DEPLOYMENT_PROVIDER=vercel_preview,
 AGENT_CLOUD_VERCEL_DEPLOY_ENABLED=1, and VERCEL_TOKEN are configured.
 Vercel Sandbox is an execution-provider status contract until a live adapter is
 implemented and verified.
+Event intake is unsigned local mode unless AGENT_CLOUD_EVENT_INGEST_SECRET is
+configured and incoming requests include a valid x-agent-cloud-event-signature.
 
 Mirendil framing:
 Treat each repo update as a minimal model lab run: ModelSpec + AgentSpec +
@@ -63,6 +67,8 @@ Primary files:
 - store.py: operational job, event, callback, lease, and lab-run storage.
 - database.py: SQLite/DuckDB embedded adapter plus optional Postgres adapter.
 - callback_auth.py: worker callback HMAC token contract.
+- event_ingest.py: signed/idempotent webhook and event intake contract.
+- readiness.py: feature readiness scorecard and production cutover blockers.
 - forge.py: generic Git and provider-native review capability contracts.
 - lab_warehouse.py: DuckDB materialized lab read model.
 - orchestrator.py: local queue and runner.
@@ -91,7 +97,9 @@ Primary files:
 - scripts/demo_local_flow.py: no-cloud happy path demo.
 - scripts/evaluate_mvp.py: single golden task evaluator.
 - scripts/evaluate_task_suite.py: multi-run lab evaluator.
+- scripts/doctor.py: local readiness/cutover scorecard.
 - scripts/install_allowed_modules.sh: dependency allowlist installer.
+- docs/sota-feature-readiness.md: comprehensive feature-readiness map.
 - tests/test_cloud_agent_service_flow.py: deterministic flow tests.
 
 Run commands:
@@ -99,6 +107,7 @@ Run commands:
 - ./demo.sh
 - python3 scripts/evaluate_mvp.py
 - python3 scripts/evaluate_task_suite.py
+- python3 scripts/doctor.py --json
 - python3 -m unittest tests.test_cloud_agent_service_flow
 - python3 -m unittest discover -s tests
 - docker --context orbstack compose -f compose.yaml up -d --build api
@@ -123,6 +132,10 @@ Monitor commands:
 - curl -sS http://127.0.0.1:8000/integrations/cloud/e2e-status
 - curl -sS http://127.0.0.1:8000/integrations/forge/status
 - curl -sS http://127.0.0.1:8000/integrations/callback-auth/status
+- curl -sS http://127.0.0.1:8000/integrations/events/status
+- curl -sS http://127.0.0.1:8000/readiness/scorecard
+- curl -sS http://127.0.0.1:8000/readiness/features
+- curl -sS http://127.0.0.1:8000/events/intakes
 - curl -sS http://127.0.0.1:8000/integrations/database/status
 - curl -sS http://127.0.0.1:8000/integrations/live/status
 - curl -sS http://127.0.0.1:8000/lab/warehouse/status
@@ -148,6 +161,7 @@ Expected successful flow:
 15. Index artifact references and accept worker callbacks when a cloud worker
     posts them.
 16. Record deployment/execution provider evidence and a provenance manifest.
+17. Report readiness and accept signed/idempotent event intake when configured.
 
 Do not:
 - Treat mock PR URLs as real GitHub PRs.
@@ -161,6 +175,8 @@ Do not:
 - Treat Postgres/RDS as live without AGENT_CLOUD_DB_PROVIDER=postgres,
   AGENT_CLOUD_POSTGRES_DSN, and a verified psycopg runtime.
 - Treat callbacks as authenticated without AGENT_CLOUD_WORKER_CALLBACK_SECRET.
+- Treat event intake as public/signed without AGENT_CLOUD_EVENT_INGEST_SECRET
+  and a valid x-agent-cloud-event-signature.
 - Treat Vercel preview/Sandbox contracts as live without env flags and evidence.
 - Commit runtime SQLite databases, generated workspaces, or artifacts.
 - Add package dependencies without updating the allowlist and tests.
@@ -189,3 +205,8 @@ Useful API reads:
 - GET /integrations/database/status
 - GET /integrations/deploy/status
 - GET /integrations/execution/status
+- GET /integrations/events/status
+- GET /readiness/scorecard
+- GET /readiness/features
+- POST /events/intake
+- GET /events/intakes

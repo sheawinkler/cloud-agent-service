@@ -22,6 +22,9 @@ Postgres/RDS operational adapter, signed worker-callback contracts, worker
 leases/heartbeats, provider-agnostic forge status, Vercel preview and execution
 provider contracts, an opt-in OpenAI edit adapter, and provenance manifests for
 successful runs.
+The current operations layer adds a runtime SOTA readiness scorecard, a local
+doctor CLI, and signed/idempotent event intake so GitHub/GitLab/CI/webhook
+events can create bounded jobs without duplicate dispatch on provider retries.
 
 Local repo jobs still use mock PR and deployment artifacts. Generic Git jobs
 clone from `git_url` and push an agent branch back to `origin`. GitHub repo jobs
@@ -86,6 +89,8 @@ Monitoring:
 - `lab_warehouse.py`: DuckDB materialized read model for lab analytics.
 - `callback_auth.py`: job-scoped HMAC token contract for worker callbacks.
 - `forge.py`: provider-agnostic Git/GitHub/GitLab/Bitbucket/Gitea review status.
+- `event_ingest.py`: signed, idempotent event/webhook intake contract.
+- `readiness.py`: feature readiness scorecard and production cutover blockers.
 - `orchestrator.py`: local in-memory queue plus persisted queued-job runner.
 - `worker.py`: container-friendly single-job or claim-next entry point with
   optional HTTP worker callbacks.
@@ -118,7 +123,9 @@ Monitoring:
 - `demo.sh`: one-command local demo.
 - `scripts/demo_local_flow.py`: no-cloud, no-Docker proof path.
 - `scripts/evaluate_task_suite.py`: multi-run task-suite evaluator.
+- `scripts/doctor.py`: local readiness/cutover doctor.
 - `llm.txt`: compact orientation file for LLM agents.
+- `docs/sota-feature-readiness.md`: comprehensive feature-readiness map.
 
 ## What The MVP Proves
 
@@ -151,6 +158,46 @@ Monitoring:
 25. Switch the embedded store to DuckDB for local lab analytics when explicitly
     configured.
 26. Record deployment/execution provider status and provenance manifests.
+27. Expose a readiness scorecard that separates live, env-gated, local-ready,
+    partial, and provider-contract capabilities.
+28. Accept signed/idempotent event intake for webhook-triggered jobs.
+
+## Readiness Scorecard And Event Intake
+
+The comprehensive feature list is executable:
+
+```bash
+python3 scripts/doctor.py --json
+python3 scripts/doctor.py --require-production-ready
+curl -sS http://127.0.0.1:8000/readiness/scorecard
+curl -sS http://127.0.0.1:8000/readiness/features
+```
+
+`/readiness/scorecard` reports `ready`, `local_ready`, `env_gated`, `partial`,
+and `contract` capabilities plus critical blockers. It is deliberately stricter
+than the local demo path; a strong local lab can still have production cutover
+blockers.
+
+`POST /events/intake` accepts generic webhook/event payloads and creates a job
+only when a repo target is present. Payloads are persisted in redacted form and
+deduped by `idempotency_key` or `x-agent-cloud-event-id`. Set
+`AGENT_CLOUD_EVENT_INGEST_SECRET` to require
+`x-agent-cloud-event-signature: sha256=<hmac_hex>` over the raw body. Without a
+secret the endpoint is unsigned local mode, intended for demos only.
+
+```bash
+curl -sS -X POST http://127.0.0.1:8000/events/intake \
+  -H 'content-type: application/json' \
+  -d '{
+    "source": "github",
+    "event_type": "issues",
+    "idempotency_key": "github-issue-123",
+    "prompt": "For my shopping website, create a buy button.",
+    "repo_path": "/host_repo",
+    "deploy_policy": "manual",
+    "run_immediately": false
+  }'
+```
 
 ## Model And Agent Lab Layer
 
@@ -376,7 +423,11 @@ curl -sS http://127.0.0.1:8000/integrations/database/status
 curl -sS http://127.0.0.1:8000/integrations/live/status
 curl -sS http://127.0.0.1:8000/integrations/forge/status
 curl -sS http://127.0.0.1:8000/integrations/callback-auth/status
+curl -sS http://127.0.0.1:8000/integrations/events/status
 curl -sS http://127.0.0.1:8000/integrations/cloud/e2e-status
+curl -sS http://127.0.0.1:8000/readiness/scorecard
+curl -sS http://127.0.0.1:8000/readiness/features
+curl -sS http://127.0.0.1:8000/events/intakes
 curl -sS http://127.0.0.1:8000/lab/appliance/status
 curl -sS http://127.0.0.1:8000/lab/warehouse/status
 curl -sS http://127.0.0.1:8000/integrations/deploy/status

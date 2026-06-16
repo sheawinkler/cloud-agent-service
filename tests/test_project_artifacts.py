@@ -15,6 +15,11 @@ class ProjectArtifactTests(unittest.TestCase):
         self.assertEqual("succeeded", payload["final_result"]["status"])
         self.assertIn("policy_gate_results", payload["final_result"])
         self.assertIn("evidence", payload["final_result"])
+        self.assertEqual(
+            "event-intake-result.v1",
+            payload["event_intake_example"]["schema_version"],
+        )
+        self.assertEqual("sota-readiness.v1", payload["readiness_example"]["schema_version"])
         self.assertIn("git_url", payload["job_payload"])
         self.assertIn("github_repo", payload["job_payload"])
         self.assertIn("model_spec", payload["job_payload"])
@@ -104,6 +109,17 @@ class ProjectArtifactTests(unittest.TestCase):
         self.assertIn("def export_dataset", content)
         self.assertIn("if __name__ == \"__main__\"", content)
 
+    def test_doctor_script_and_readiness_doc_exist(self):
+        script = ROOT / "scripts" / "doctor.py"
+        docs = ROOT / "docs" / "sota-feature-readiness.md"
+        script_content = script.read_text(encoding="utf-8")
+        docs_content = docs.read_text(encoding="utf-8")
+
+        self.assertIn("def main", script_content)
+        self.assertIn("ReadinessReporter", script_content)
+        self.assertIn("/readiness/scorecard", docs_content)
+        self.assertIn("/events/intake", docs_content)
+
     def test_lab_in_a_box_demo_succeeds(self):
         result = subprocess.run(
             ["python3", "scripts/demo_lab_in_a_box.py"],
@@ -118,6 +134,8 @@ class ProjectArtifactTests(unittest.TestCase):
         self.assertTrue(payload["ok"])
         self.assertTrue(payload["checks"]["dataset_exported"])
         self.assertTrue(payload["checks"]["router_recommended"])
+        self.assertTrue(payload["checks"]["readiness_reported"])
+        self.assertIn("readiness_score", payload["readiness"])
 
 
 if __name__ == "__main__":
