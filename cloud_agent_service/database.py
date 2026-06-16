@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib
 import os
+import re
 import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
@@ -43,7 +44,7 @@ def database_status(db_path: str | Path, provider: str | None = None) -> Databas
             "DuckDB is opt-in and best suited for local lab analytics, not multi-writer queues."
         )
     if selected == "postgres":
-        mode = "production-contract"
+        mode = "production-operational-adapter"
         if not os.environ.get("AGENT_CLOUD_POSTGRES_DSN"):
             configured = False
             missing.append("AGENT_CLOUD_POSTGRES_DSN")
@@ -53,8 +54,9 @@ def database_status(db_path: str | Path, provider: str | None = None) -> Databas
             configured = False
             missing.append("psycopg")
         notes.append(
-            "Postgres is the production operational-store target; this MVP exposes "
-            "readiness but keeps SQLite as the default local write path."
+            "Postgres is the production operational-store target. SQLite remains "
+            "the default local write path; use AGENT_CLOUD_DB_PROVIDER=postgres "
+            "only with a configured DSN and psycopg runtime."
         )
     return DatabaseStatus(
         provider=selected,
@@ -84,10 +86,7 @@ def connect_database(db_path: str | Path, provider: str):
         conn.row_factory = sqlite3.Row
         return conn
     if selected == "postgres":
-        raise RuntimeError(
-            "Postgres is exposed as a production readiness contract in this MVP; "
-            "use sqlite for the operational store until the SQL adapter is enabled."
-        )
+        return PostgresConnection(str(db_path))
     return DuckDbConnection(db_path)
 
 
@@ -173,3 +172,80 @@ class DuckDbConnection:
         if stripped == "BEGIN IMMEDIATE":
             return "BEGIN TRANSACTION"
         return normalized
+
+
+class StaticCursor:
+    def __init__(self, rows: list[dict[str, Any]] | None = None) -> None:
+        self._rows = rows or []
+        self.rowcount = len(self._rows)
+
+    def fetchone(self) -> dict[str, Any] | None:
+        return self._rows[0] if self._rows else None
+
+    def fetchall(self) -> list[dict[str, Any]]:
+        return self._rows
+
+
+class PostgresConnection:
+    PRAGMA_TABLE_INFO_RE = re.compile(r"^\s*PRAGMA\s+table_info\(([^)]+)\)\s*$", re.I)
+
+    def __init__(self, dsn: str) -> None:
+        psycopg = importlib.import_module("psycopg")
+        rows = importlib.import_module("psycopg.rows")
+        self.dsn = dsn or os.environ.get("AGENT_CLOUD_POSTGRES_DSN", "")
+        if not self.dsn:
+            raise RuntimeError("AGENT_CLOUD_POSTGRES_DSN is required for postgres provider")
+        self.conn = psycopg.connect(self.dsn, row_factory=rows.dict_row)
+        self.isolation_level = None
+
+    def close(self) -> None:
+        self.conn.close()
+
+    def __enter__(self) -> PostgresConnection:
+        self.conn.__enter__()
+        return self
+
+    def __exit__(self, exc_type: object, exc: object, tb: object) -> None:
+        self.conn.__exit__(exc_type, exc, tb)
+
+    def commit(self) -> None:
+        self.conn.commit()
+
+    def rollback(self) -> None:
+        self.conn.rollback()
+
+    def execute(self, sql: str, params: Any | None = None) -> Any:
+        table_name = self._pragma_table_name(sql)
+        if table_name:
+            return StaticCursor(self._table_info(table_name))
+        return self.conn.execute(self._normalize_sql(sql), params or ())
+
+    def _table_info(self, table_name: str) -> list[dict[str, Any]]:
+        cursor = self.conn.execute(
+            """
+            SELECT column_name AS name
+            FROM information_schema.columns
+            WHERE table_schema = 'public' AND table_name = %s
+            ORDER BY ordinal_position
+            """,
+            (table_name,),
+        )
+        return list(cursor.fetchall())
+
+    @classmethod
+    def _pragma_table_name(cls, sql: str) -> str | None:
+        match = cls.PRAGMA_TABLE_INFO_RE.match(sql)
+        if not match:
+            return None
+        return match.group(1).strip().strip('"')
+
+    @staticmethod
+    def _normalize_sql(sql: str) -> str:
+        normalized = sql.replace(
+            "id INTEGER PRIMARY KEY AUTOINCREMENT",
+            "id BIGSERIAL PRIMARY KEY",
+        )
+        stripped = " ".join(normalized.strip().split()).upper()
+        if stripped == "BEGIN IMMEDIATE":
+            return "BEGIN"
+        return normalized.replace("?", "%s")

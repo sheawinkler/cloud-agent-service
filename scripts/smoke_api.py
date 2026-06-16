@@ -113,8 +113,45 @@ def run_smoke(base_url: str, repo_path: str) -> dict[str, Any]:
     record(
         results,
         "live_provider_status",
-        {"github", "cloud", "database", "deployment", "execution"}.issubset(set(live)),
+        {
+            "github",
+            "forge",
+            "cloud",
+            "database",
+            "deployment",
+            "execution",
+            "callback_auth",
+        }.issubset(set(live)),
         response=live,
+    )
+
+    cloud_e2e = client.get("/integrations/cloud/e2e-status")
+    record(
+        results,
+        "cloud_e2e_status",
+        "ready_for_live_e2e" in cloud_e2e
+        and "callback_auth" in cloud_e2e
+        and "worker_leases" in cloud_e2e,
+        response=cloud_e2e,
+    )
+
+    forge = client.get("/integrations/forge/status")
+    record(
+        results,
+        "forge_status",
+        "generic_git" in forge
+        and "github" in forge
+        and forge["generic_git"]["configured"] is True,
+        response=forge,
+    )
+
+    callback_auth = client.get("/integrations/callback-auth/status")
+    record(
+        results,
+        "callback_auth_status",
+        callback_auth["mode"] in {"unsigned-local", "signed-hmac"}
+        and callback_auth["header"] == "x-agent-cloud-callback-token",
+        response=callback_auth,
     )
 
     deployment = client.get("/integrations/deploy/status")
@@ -133,6 +170,15 @@ def run_smoke(base_url: str, repo_path: str) -> dict[str, Any]:
         execution["provider"] in {"local", "ecs_fargate", "vercel_sandbox"}
         and "mode" in execution,
         response=execution,
+    )
+
+    appliance = client.get("/lab/appliance/status")
+    record(
+        results,
+        "lab_appliance_status",
+        appliance["schema_version"] == "lab-appliance-status.v1"
+        and appliance["default_live_external_calls"] is False,
+        response=appliance,
     )
 
     models = client.get("/models")
@@ -244,9 +290,19 @@ def run_smoke(base_url: str, repo_path: str) -> dict[str, Any]:
         and payload["harness_adapter_contract"]["adapter_id"] == "local-template-adapter"
         and payload["security_profile"]["profile_id"] == "local-template.locked-down.v1"
         and payload["routing_policy"] == "fixed"
-        and payload["routing_decision"]["selected_harness_id"] == "local-template",
+        and payload["routing_decision"]["selected_harness_id"] == "local-template"
+        and payload["callback_auth"]["mode"] in {"unsigned-local", "signed-hmac"},
         token_budget=payload["token_budget"],
         max_changed_files=payload["max_changed_files"],
+    )
+
+    worker_callback_auth = client.get(f"/jobs/{job_id}/worker-callback-auth")
+    record(
+        results,
+        "worker_callback_auth",
+        worker_callback_auth["mode"] in {"unsigned-local", "signed-hmac"}
+        and "token" in worker_callback_auth,
+        response=worker_callback_auth,
     )
 
     callback = client.post(
@@ -438,6 +494,11 @@ def run_smoke(base_url: str, repo_path: str) -> dict[str, Any]:
         and "Execution" in lab_ui
         and "Lab Warehouse" in lab_ui
         and "Live Providers" in lab_ui
+        and "Cloud E2E" in lab_ui
+        and "Forge" in lab_ui
+        and "Callback Auth" in lab_ui
+        and "Model Runtimes" in lab_ui
+        and "Lab Appliance" in lab_ui
         and "Worker Leases" in lab_ui
         and "Provenance" in lab_ui
         and "Analysis Cases" in lab_ui

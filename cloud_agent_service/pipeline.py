@@ -25,10 +25,12 @@ from cloud_agent_service.analysis_lab import (
 )
 from cloud_agent_service.artifact_schema import RunArtifact, RunArtifactWriter
 from cloud_agent_service.artifact_store import ArtifactStorage
+from cloud_agent_service.callback_auth import WorkerCallbackAuth
 from cloud_agent_service.database import production_database_status
 from cloud_agent_service.dataset_export import SlmDatasetExporter
 from cloud_agent_service.deployment import DeploymentManager
 from cloud_agent_service.execution import ExecutionProvider
+from cloud_agent_service.forge import ForgeRegistry
 from cloud_agent_service.harness_adapters import (
     HarnessAdapterRegistry,
     HarnessExecutionRequest,
@@ -81,6 +83,7 @@ ALLOWED_PYTHON_MODULES = [
     "mypy",
     "GitPython",
     "openai",
+    "psycopg",
 ]
 
 ALLOWED_SHELL_COMMANDS = [
@@ -1152,6 +1155,8 @@ class AgentCloudFlow:
         self.git_repo_connector = GitRepoConnector()
         self.github_client = GitHubAppClient()
         self.openai_client = OpenAIResponsesClient()
+        self.callback_auth = WorkerCallbackAuth()
+        self.forge_registry = ForgeRegistry()
         self.github_repo_connector = GitHubRepoConnector(self.github_client)
         self.repo_analyzer = RepoAnalyzer()
         self.dependency_installer = DependencyInstaller()
@@ -1268,6 +1273,7 @@ class AgentCloudFlow:
             routing_policy=request.routing_policy,
             routing_decision=job["routing_decision_json"],
             status_callback_url=f"{status_callback_url.rstrip('/')}/{job_id}",
+            callback_auth=self.callback_auth.payload_for_job(job_id),
             output_schema=plan.output_schema,
         )
 
@@ -1343,6 +1349,20 @@ class AgentCloudFlow:
 
     def github_status(self) -> GitHubIntegrationStatus:
         return self.github_integration.status()
+
+    def forge_status(self) -> dict[str, Any]:
+        return self.forge_registry.statuses()
+
+    def callback_auth_status(self) -> dict[str, object]:
+        return self.callback_auth.status_dict()
+
+    def worker_callback_auth_for_job(self, job_id: str) -> dict[str, object]:
+        if not self.store.get_job(job_id):
+            raise KeyError(f"unknown job_id: {job_id}")
+        return self.callback_auth.payload_for_job(job_id)
+
+    def verify_worker_callback(self, job_id: str, token: str | None) -> bool:
+        return self.callback_auth.verify(job_id, token)
 
     def model_agent_status(self) -> dict[str, Any]:
         provider_status = {
@@ -1970,6 +1990,11 @@ class AgentCloudFlow:
                 adapter_result,
                 request.routing_policy,
                 routing_decision,
+                self.forge_registry.review_target(
+                    repo_provider=request.repo_provider.value,
+                    git_url=request.git_url,
+                    github_repo=request.github_repo,
+                ),
             )
             run_artifact = self.run_artifacts.write(
                 artifacts_dir=self.artifacts_dir,
@@ -2185,6 +2210,7 @@ class AgentCloudFlow:
         adapter_result: Any,
         routing_policy: RoutingPolicy,
         routing_decision: dict[str, Any],
+        review_target: dict[str, object],
     ) -> dict[str, Any]:
         return {
             "job_id": job_id,
@@ -2196,6 +2222,7 @@ class AgentCloudFlow:
             "harness_spec": asdict(harness_spec),
             "routing_policy": routing_policy.value,
             "routing_decision": routing_decision,
+            "review_forge": review_target,
             "security_profile": asdict(security_profile),
             "harness_adapter_result": asdict(adapter_result),
             "preview_url": preview.preview_url,

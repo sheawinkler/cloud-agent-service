@@ -334,6 +334,7 @@ class WorkerJobPayload:
     routing_policy: RoutingPolicy
     routing_decision: dict[str, Any]
     status_callback_url: str
+    callback_auth: dict[str, Any]
     output_schema: dict[str, Any]
 
 

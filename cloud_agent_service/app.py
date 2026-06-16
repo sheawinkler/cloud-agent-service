@@ -11,6 +11,7 @@ from fastapi import BackgroundTasks, FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
+from cloud_agent_service.callback_auth import CALLBACK_TOKEN_HEADER
 from cloud_agent_service.cloud_dispatch import EcsDispatchPlanner
 from cloud_agent_service.lab_warehouse import LabWarehouse
 from cloud_agent_service.models import (
@@ -154,9 +155,56 @@ def github_status() -> dict[str, Any]:
     return asdict(flow.github_status())
 
 
+@app.get("/integrations/forge/status")
+def forge_status() -> dict[str, Any]:
+    return flow.forge_status()
+
+
 @app.get("/integrations/cloud/status")
 def cloud_status() -> dict[str, Any]:
     return ecs_dispatch_planner.status()
+
+
+@app.get("/integrations/cloud/e2e-status")
+def cloud_e2e_status() -> dict[str, Any]:
+    cloud = ecs_dispatch_planner.status()
+    callback_auth = flow.callback_auth_status()
+    artifact_storage = {
+        "provider": flow.artifact_storage.provider,
+        "upload_enabled": flow.artifact_storage.upload_enabled,
+        "bucket_configured": bool(flow.artifact_storage.bucket),
+    }
+    active_leases = [
+        lease for lease in flow.list_job_leases() if lease.get("status") == "active"
+    ]
+    ready = (
+        cloud["configured"]
+        and cloud["submit_enabled"]
+        and callback_auth["configured"]
+        and (
+            artifact_storage["provider"] == "local"
+            or (
+                artifact_storage["provider"] == "s3"
+                and artifact_storage["upload_enabled"]
+                and artifact_storage["bucket_configured"]
+            )
+        )
+    )
+    return {
+        "ready_for_live_e2e": ready,
+        "cloud": cloud,
+        "execution": asdict(flow.execution_provider.status()),
+        "callback_auth": callback_auth,
+        "artifact_storage": artifact_storage,
+        "worker_leases": {
+            "active": len(active_leases),
+            "total": len(flow.list_job_leases()),
+        },
+        "notes": [
+            "Live E2E requires ECS submit enabled, signed callbacks, and artifact storage.",
+            "This endpoint reports readiness; it does not submit a task.",
+        ],
+    }
 
 
 @app.get("/integrations/database/status")
@@ -174,14 +222,21 @@ def execution_provider_status() -> dict[str, Any]:
     return asdict(flow.execution_provider.status())
 
 
+@app.get("/integrations/callback-auth/status")
+def callback_auth_status() -> dict[str, Any]:
+    return flow.callback_auth_status()
+
+
 @app.get("/integrations/live/status")
 def live_provider_status() -> dict[str, Any]:
     return {
         "github": asdict(flow.github_status()),
+        "forge": flow.forge_status(),
         "cloud": ecs_dispatch_planner.status(),
         "database": flow.database_status(),
         "deployment": asdict(flow.deployer.status()),
         "execution": asdict(flow.execution_provider.status()),
+        "callback_auth": flow.callback_auth_status(),
     }
 
 
@@ -391,6 +446,23 @@ def lab_warehouse_status() -> dict[str, Any]:
     return flow.lab_warehouse_status()
 
 
+@app.get("/lab/appliance/status")
+def lab_appliance_status() -> dict[str, Any]:
+    return {
+        "schema_version": "lab-appliance-status.v1",
+        "script": "python3 scripts/demo_lab_in_a_box.py",
+        "checks": [
+            "seed_repo",
+            "baseline_run",
+            "analysis_experiment",
+            "dataset_export",
+            "warehouse_refresh",
+            "router_recommendation",
+        ],
+        "default_live_external_calls": False,
+    }
+
+
 @app.post("/lab/warehouse/refresh")
 def refresh_lab_warehouse() -> dict[str, Any]:
     return flow.refresh_lab_warehouse()
@@ -447,6 +519,14 @@ def get_worker_payload(job_id: str) -> dict[str, Any]:
     return asdict(payload)
 
 
+@app.get("/jobs/{job_id}/worker-callback-auth")
+def get_worker_callback_auth(job_id: str) -> dict[str, Any]:
+    try:
+        return flow.worker_callback_auth_for_job(job_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="job not found") from exc
+
+
 @app.get("/jobs/{job_id}/cloud-dispatch-plan")
 def get_cloud_dispatch_plan(job_id: str) -> dict[str, Any]:
     try:
@@ -479,8 +559,14 @@ def list_cloud_dispatches(job_id: str) -> dict[str, Any]:
 
 
 @app.post("/jobs/{job_id}/worker-callback")
-def post_worker_callback(job_id: str, payload: WorkerCallbackPayload) -> dict[str, Any]:
+def post_worker_callback(
+    job_id: str,
+    payload: WorkerCallbackPayload,
+    request: Request,
+) -> dict[str, Any]:
     try:
+        if not flow.verify_worker_callback(job_id, request.headers.get(CALLBACK_TOKEN_HEADER)):
+            raise HTTPException(status_code=401, detail="invalid worker callback token")
         return asdict(
             flow.record_worker_callback(
                 job_id,
@@ -810,6 +896,26 @@ def _lab_dashboard_html() -> str:
         <pre id="liveProviders"></pre>
       </div>
       <div class="panel">
+        <h2>Cloud E2E</h2>
+        <pre id="cloudE2E"></pre>
+      </div>
+      <div class="panel">
+        <h2>Forge</h2>
+        <pre id="forge"></pre>
+      </div>
+      <div class="panel">
+        <h2>Callback Auth</h2>
+        <pre id="callbackAuth"></pre>
+      </div>
+      <div class="panel">
+        <h2>Model Runtimes</h2>
+        <pre id="models"></pre>
+      </div>
+      <div class="panel">
+        <h2>Lab Appliance</h2>
+        <pre id="appliance"></pre>
+      </div>
+      <div class="panel">
         <h2>Deployment</h2>
         <pre id="deployment"></pre>
       </div>
@@ -912,6 +1018,11 @@ def _lab_dashboard_html() -> str:
         database,
         warehouse,
         liveProviders,
+        cloudE2E,
+        forge,
+        callbackAuth,
+        models,
+        appliance,
         deployment,
         execution,
         cases,
@@ -921,6 +1032,11 @@ def _lab_dashboard_html() -> str:
         fetch('/integrations/database/status').then((response) => response.json()),
         fetch('/lab/warehouse/status').then((response) => response.json()),
         fetch('/integrations/live/status').then((response) => response.json()),
+        fetch('/integrations/cloud/e2e-status').then((response) => response.json()),
+        fetch('/integrations/forge/status').then((response) => response.json()),
+        fetch('/integrations/callback-auth/status').then((response) => response.json()),
+        fetch('/models').then((response) => response.json()),
+        fetch('/lab/appliance/status').then((response) => response.json()),
         fetch('/integrations/deploy/status').then((response) => response.json()),
         fetch('/integrations/execution/status').then((response) => response.json()),
         fetch('/analysis/cases').then((response) => response.json()),
@@ -940,6 +1056,12 @@ def _lab_dashboard_html() -> str:
       document.getElementById('warehouse').textContent = JSON.stringify(warehouse, null, 2);
       document.getElementById('liveProviders').textContent =
         JSON.stringify(liveProviders, null, 2);
+      document.getElementById('cloudE2E').textContent = JSON.stringify(cloudE2E, null, 2);
+      document.getElementById('forge').textContent = JSON.stringify(forge, null, 2);
+      document.getElementById('callbackAuth').textContent =
+        JSON.stringify(callbackAuth, null, 2);
+      document.getElementById('models').textContent = JSON.stringify(models, null, 2);
+      document.getElementById('appliance').textContent = JSON.stringify(appliance, null, 2);
       document.getElementById('deployment').textContent = JSON.stringify(deployment, null, 2);
       document.getElementById('execution').textContent = JSON.stringify(execution, null, 2);
       document.getElementById('leases').textContent = JSON.stringify(leases, null, 2);

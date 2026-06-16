@@ -8,9 +8,10 @@ from pathlib import Path
 from unittest.mock import patch
 
 from cloud_agent_service.cloud_dispatch import EcsDispatchPlanner
-from cloud_agent_service.database import production_database_status
+from cloud_agent_service.database import PostgresConnection, production_database_status
 from cloud_agent_service.dataset_export import SlmDatasetExporter
 from cloud_agent_service.execution import ExecutionProvider
+from cloud_agent_service.forge import ForgeRegistry
 from cloud_agent_service.harness_registry import HarnessRegistry
 from cloud_agent_service.lab_warehouse import LabWarehouse
 from cloud_agent_service.models import (
@@ -293,6 +294,8 @@ class CloudAgentServiceFlowTests(unittest.TestCase):
                 "local-template.locked-down.v1",
                 payload.security_profile["profile_id"],
             )
+            self.assertEqual("unsigned-local", payload.callback_auth["mode"])
+            self.assertFalse(payload.callback_auth["configured"])
             self.assertIn("policy_gate_results", payload.output_schema)
 
     def test_analysis_cases_experiment_report_and_dataset_export(self):
@@ -609,6 +612,66 @@ class CloudAgentServiceFlowTests(unittest.TestCase):
             )
             self.assertTrue(result.evidence["run_artifact"]["complete"])
 
+    def test_openai_edit_adapter_executes_when_enabled(self):
+        with tempfile.TemporaryDirectory() as tmp, patch.dict(
+            "os.environ",
+            {
+                "AGENT_CLOUD_ENABLE_OPENAI_EDIT_ADAPTER": "1",
+                "OPENAI_API_KEY": "test-openai-key",
+            },
+        ), patch(
+            "cloud_agent_service.harness_adapters.OpenAIEditClient.create_edit",
+            return_value={
+                "edits": [
+                    {
+                        "path": "index.html",
+                        "content": (
+                            "<!doctype html>\n<html>\n<body>\n<h1>Shop</h1>\n"
+                            '<button type="button" data-agent="buy-button">Buy</button>\n'
+                            "</body>\n</html>\n"
+                        ),
+                    }
+                ],
+                "commands_run": ["fake openai edit"],
+                "tests_passed": [],
+                "tests_failed": [],
+                "dependency_changes": [],
+                "residual_risks": [],
+                "transcript": ["fake openai adapter executed"],
+            },
+        ):
+            root = Path(tmp)
+            repo = self._build_repo(root)
+            flow = self._build_flow(root)
+            job_id = flow.create_job(
+                JobRequest(
+                    prompt="For my shopping website, create a buy button.",
+                    repo_path=str(repo),
+                    deploy_policy=DeploymentPolicy.LOCAL,
+                    harness_id="openai-codex-cli",
+                )
+            )
+            payload = flow.build_worker_payload(job_id)
+            result = flow.run_job(job_id)
+
+            self.assertEqual("openai-codex-cli", payload.harness_id)
+            self.assertTrue(payload.harness_adapter_contract["enabled"])
+            self.assertEqual(JobStatus.SUCCEEDED, result.status)
+            self.assertEqual("promote", result.promotion_decision["status"])
+            self.assertEqual(
+                "openai-responses-edit-adapter",
+                result.evidence["harness_adapter_result"]["adapter_id"],
+            )
+            self.assertEqual(
+                "executed",
+                result.evidence["harness_adapter_result"]["adapter_status"],
+            )
+            self.assertEqual(
+                "openai-codex-cli.responses-edit-adapter.v1",
+                result.evidence["security_profile"]["profile_id"],
+            )
+            self.assertTrue(result.evidence["run_artifact"]["complete"])
+
     def test_job_store_migrates_legacy_lab_runs_before_harness_indexes(self):
         with tempfile.TemporaryDirectory() as tmp:
             db_path = Path(tmp) / "jobs.sqlite3"
@@ -709,6 +772,20 @@ class CloudAgentServiceFlowTests(unittest.TestCase):
             self.assertEqual("", payload.repo_path)
             self.assertEqual("agent/" + job_id, payload.working_branch)
 
+    def test_forge_registry_reports_provider_agnostic_git_contracts(self):
+        registry = ForgeRegistry()
+        statuses = registry.statuses()
+        target = registry.review_target(
+            repo_provider="git",
+            git_url="https://gitlab.com/acme/shop.git",
+        )
+
+        self.assertTrue(statuses["generic_git"]["configured"])
+        self.assertIn("gitlab", statuses)
+        self.assertEqual("gitlab", target["provider"])
+        self.assertEqual("branch-ref", target["mode"])
+        self.assertEqual("https://gitlab.com/acme/shop.git", target["target"])
+
     def test_generic_git_flow_clones_and_pushes_review_branch(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -728,6 +805,8 @@ class CloudAgentServiceFlowTests(unittest.TestCase):
             self.assertEqual(f"git://review/agent/{job_id}", result.pr_url)
             self.assertEqual("git", result.evidence["repo_provider"])
             self.assertEqual("file://local-git-remote", result.evidence["git_target"])
+            self.assertEqual("generic_git", result.evidence["review_forge"]["provider"])
+            self.assertEqual("branch-ref", result.evidence["review_forge"]["mode"])
             self.assertEqual("needs_review", result.promotion_decision["status"])
             subprocess.run(
                 ["git", "--git-dir", str(remote), "rev-parse", f"refs/heads/agent/{job_id}"],
@@ -978,6 +1057,7 @@ class CloudAgentServiceFlowTests(unittest.TestCase):
                 "AGENT_CLOUD_ECS_SUBNETS": "subnet-a,subnet-b",
                 "AGENT_CLOUD_ECS_SECURITY_GROUPS": "sg-1",
                 "AGENT_CLOUD_ECS_CONTAINER_NAME": "worker",
+                "AGENT_CLOUD_WORKER_CALLBACK_SECRET": "dispatch-secret",
                 "AWS_REGION": "us-west-2",
             },
         ):
@@ -1009,6 +1089,8 @@ class CloudAgentServiceFlowTests(unittest.TestCase):
             self.assertEqual("worker", container["name"])
             self.assertIn("--job-id", container["command"])
             self.assertEqual("local-template", env["AGENT_CLOUD_HARNESS_ID"])
+            self.assertEqual("<redacted>", env["AGENT_CLOUD_WORKER_CALLBACK_TOKEN"])
+            self.assertEqual("<redacted>", plan["worker_payload"]["callback_auth"]["token"])
             self.assertEqual(
                 f"https://api.example.com/jobs/{job_id}",
                 env["AGENT_CLOUD_STATUS_CALLBACK_URL"],
@@ -1031,6 +1113,7 @@ class CloudAgentServiceFlowTests(unittest.TestCase):
                 "AGENT_CLOUD_ECS_TASK_DEFINITION": "agent-task:1",
                 "AGENT_CLOUD_ECS_SUBNETS": "subnet-a,subnet-b",
                 "AGENT_CLOUD_ECS_SUBMIT_ENABLED": "1",
+                "AGENT_CLOUD_WORKER_CALLBACK_SECRET": "dispatch-secret",
                 "AWS_REGION": "us-west-2",
             },
         ):
@@ -1052,9 +1135,21 @@ class CloudAgentServiceFlowTests(unittest.TestCase):
             self.assertEqual(CloudDispatchStatus.SUBMITTED, dispatch.status)
             self.assertEqual("arn:aws:ecs:us-west-2:123:task/abc", dispatch.task_arn)
             self.assertEqual("agent-cluster", fake_client.request["cluster"])
+            submitted_env = {
+                entry["name"]: entry["value"]
+                for entry in fake_client.request["overrides"]["containerOverrides"][0][
+                    "environment"
+                ]
+            }
+            self.assertNotEqual("<redacted>", submitted_env["AGENT_CLOUD_WORKER_CALLBACK_TOKEN"])
             stored = flow.store.get_cloud_dispatch(dispatch.dispatch_id)
             self.assertEqual("submitted", stored["status"])
             self.assertEqual(job_id, stored["job_id"])
+            stored_env = {
+                entry["name"]: entry["value"]
+                for entry in stored["request"]["overrides"]["containerOverrides"][0]["environment"]
+            }
+            self.assertEqual("<redacted>", stored_env["AGENT_CLOUD_WORKER_CALLBACK_TOKEN"])
 
     def test_worker_callback_protocol_records_progress(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -1088,6 +1183,29 @@ class CloudAgentServiceFlowTests(unittest.TestCase):
             leases = flow.list_job_leases(job_id)
             self.assertEqual(1, len(leases))
             self.assertEqual("active", leases[0]["status"])
+
+    def test_worker_callback_auth_generates_and_verifies_job_token(self):
+        with tempfile.TemporaryDirectory() as tmp, patch.dict(
+            "os.environ",
+            {"AGENT_CLOUD_WORKER_CALLBACK_SECRET": "unit-test-secret"},
+        ):
+            root = Path(tmp)
+            repo = self._build_repo(root)
+            flow = self._build_flow(root)
+            job_id = flow.create_job(
+                JobRequest(
+                    prompt="For my shopping website, create a buy button.",
+                    repo_path=str(repo),
+                )
+            )
+
+            auth = flow.worker_callback_auth_for_job(job_id)
+            payload = flow.build_worker_payload(job_id)
+
+            self.assertEqual("signed-hmac", auth["mode"])
+            self.assertEqual(auth["token"], payload.callback_auth["token"])
+            self.assertTrue(flow.verify_worker_callback(job_id, str(auth["token"])))
+            self.assertFalse(flow.verify_worker_callback(job_id, "wrong-token"))
 
     def test_job_lease_lifecycle_and_stale_recovery(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -1192,7 +1310,7 @@ class CloudAgentServiceFlowTests(unittest.TestCase):
             self.assertEqual(1, flow.lab_summary()["total_runs"])
             self.assertEqual(1, flow.lab_leaderboard()[0]["promote_count"])
 
-    def test_postgres_production_database_status_is_contract_only(self):
+    def test_postgres_production_database_status_requires_dsn(self):
         with patch.dict(
             "os.environ",
             {
@@ -1203,8 +1321,20 @@ class CloudAgentServiceFlowTests(unittest.TestCase):
             status = production_database_status()
 
             self.assertEqual("postgres", status.provider)
-            self.assertEqual("production-contract", status.mode)
+            self.assertEqual("production-operational-adapter", status.mode)
             self.assertIn("AGENT_CLOUD_POSTGRES_DSN", status.missing)
+
+    def test_postgres_adapter_normalizes_sqlite_compatibility_sql(self):
+        sql = PostgresConnection._normalize_sql(
+            "INSERT INTO jobs (job_id, status) VALUES (?, ?)"
+        )
+        ddl = PostgresConnection._normalize_sql(
+            "CREATE TABLE IF NOT EXISTS job_events (id INTEGER PRIMARY KEY AUTOINCREMENT)"
+        )
+
+        self.assertEqual("INSERT INTO jobs (job_id, status) VALUES (%s, %s)", sql)
+        self.assertIn("id BIGSERIAL PRIMARY KEY", ddl)
+        self.assertEqual("jobs", PostgresConnection._pragma_table_name("PRAGMA table_info(jobs)"))
 
     def test_vercel_preview_provider_records_dry_run_contract(self):
         with tempfile.TemporaryDirectory() as tmp, patch.dict(

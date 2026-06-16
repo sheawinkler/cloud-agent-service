@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import importlib
 import os
+from copy import deepcopy
 from dataclasses import asdict, dataclass
 from typing import Any
 
@@ -58,8 +59,22 @@ class EcsDispatchPlanner:
             region=os.environ.get("AWS_REGION", os.environ.get("AWS_DEFAULT_REGION", "us-east-1")),
         )
 
-    def build_run_task_request(self, payload: WorkerJobPayload) -> dict[str, Any]:
+    def build_run_task_request(
+        self,
+        payload: WorkerJobPayload,
+        *,
+        include_secrets: bool = False,
+    ) -> dict[str, Any]:
         config = self.config_from_env()
+        callback_env = []
+        callback_token = payload.callback_auth.get("token")
+        if callback_token:
+            callback_env.append(
+                {
+                    "name": "AGENT_CLOUD_WORKER_CALLBACK_TOKEN",
+                    "value": str(callback_token) if include_secrets else "<redacted>",
+                }
+            )
         return {
             "provider": "aws-ecs",
             "mode": "dry-run-contract",
@@ -96,6 +111,7 @@ class EcsDispatchPlanner:
                                     "name": "AGENT_CLOUD_STATUS_CALLBACK_URL",
                                     "value": payload.status_callback_url,
                                 },
+                                *callback_env,
                             ],
                         }
                     ]
@@ -108,7 +124,7 @@ class EcsDispatchPlanner:
                     {"key": "harness_id", "value": payload.harness_id},
                 ],
             },
-            "worker_payload": asdict(payload),
+            "worker_payload": self._redact_worker_payload(asdict(payload)),
         }
 
     def submit_run_task(
@@ -118,7 +134,7 @@ class EcsDispatchPlanner:
     ) -> CloudDispatchRecord:
         if not _truthy(os.environ.get("AGENT_CLOUD_ECS_SUBMIT_ENABLED")):
             raise ValueError("ECS submit is disabled; set AGENT_CLOUD_ECS_SUBMIT_ENABLED=1")
-        plan = self.build_run_task_request(payload)
+        plan = self.build_run_task_request(payload, include_secrets=True)
         request = plan["run_task_request"]
         region = plan["region"]
         client = ecs_client or self._ecs_client(region)
@@ -133,7 +149,7 @@ class EcsDispatchPlanner:
                 status=CloudDispatchStatus.FAILED,
                 task_arn=None,
                 region=region,
-                request=request,
+                request=self._redact_request(request),
                 response={"error": str(exc)},
             )
         tasks = response.get("tasks", []) if isinstance(response, dict) else []
@@ -146,7 +162,7 @@ class EcsDispatchPlanner:
             status=CloudDispatchStatus.SUBMITTED,
             task_arn=task_arn,
             region=region,
-            request=request,
+            request=self._redact_request(request),
             response=self._response_summary(response),
         )
 
@@ -163,6 +179,33 @@ class EcsDispatchPlanner:
             "failures": response.get("failures", []),
             "response_metadata": response.get("ResponseMetadata", {}),
         }
+
+    @staticmethod
+    def _redact_worker_payload(payload: dict[str, Any]) -> dict[str, Any]:
+        redacted = dict(payload)
+        callback_auth = dict(redacted.get("callback_auth") or {})
+        if callback_auth.get("token"):
+            callback_auth["token"] = "<redacted>"
+        redacted["callback_auth"] = callback_auth
+        return redacted
+
+    @staticmethod
+    def _redact_request(request: dict[str, Any]) -> dict[str, Any]:
+        redacted = deepcopy(request)
+        for override in (
+            redacted.get("overrides", {}).get("containerOverrides", [])
+            if isinstance(redacted.get("overrides"), dict)
+            else []
+        ):
+            if not isinstance(override, dict):
+                continue
+            for entry in override.get("environment", []):
+                if (
+                    isinstance(entry, dict)
+                    and entry.get("name") == "AGENT_CLOUD_WORKER_CALLBACK_TOKEN"
+                ):
+                    entry["value"] = "<redacted>"
+        return redacted
 
     @staticmethod
     def _dispatch_id(
