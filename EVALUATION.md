@@ -41,6 +41,8 @@ the deploy boundary when evidence is weak.
 | Forge provider | Git review output is not locked to GitHub. | `/integrations/forge/status` reports generic Git plus GitHub/GitLab/Bitbucket/Gitea review capabilities. |
 | OpenAI edit adapter | A live model-backed edit path exists behind explicit gates. | `openai-codex-cli` can use `AGENT_CLOUD_ENABLE_OPENAI_EDIT_ADAPTER` plus `OPENAI_API_KEY`; otherwise it falls back to local contract execution. |
 | Lab appliance | The lab can be demonstrated end to end without external services. | `scripts/demo_lab_in_a_box.py` seeds a repo, runs a lab job, exports JSONL, refreshes the warehouse, and reports router/leaderboard state. |
+| Readiness scorecard | Production gaps are executable status, not hand-wavy roadmap prose. | `/readiness/scorecard`, `/readiness/features`, and `scripts/doctor.py` report ready/local-ready/env-gated/partial/contract capabilities and critical blockers. |
+| Event intake | External events can create bounded jobs safely. | `/events/intake` verifies HMAC when configured, dedupes by idempotency key, redacts payloads, and only dispatches when a repo target exists. |
 | Provenance | Successful runs leave a compact manifest tying evidence to hashes. | `/jobs/<id>/provenance` returns manifest path, digest, deployment record, and source fingerprints. |
 | Safety | Failed tests or policies stop sync/deploy. | Gate failure returns `failed` before mock PR/deploy. |
 | Preview proof | Reviewers get inspectable evidence before deploy. | Final result includes preview URL, preview artifact, and browser-proof checks. |
@@ -85,6 +87,9 @@ the deploy boundary when evidence is weak.
 - GitHub App sync success rate.
 - Forge-native review coverage by provider.
 - Lab appliance demo success rate.
+- Readiness score and critical blocker count.
+- Event intake accepted/rejected/duplicate counts.
+- Event intake signature rejection count.
 - Average changed files per job.
 - Average token budget requested per job.
 - Token budget consumed per stage.
@@ -286,6 +291,25 @@ the deploy boundary when evidence is weak.
     - Expected: manifest includes changed-file fingerprints, artifact refs,
       deployment provider record, policy gates, and promotion inputs.
 
+35. Readiness scorecard
+    - Call `/readiness/scorecard`, `/readiness/features`, and
+      `python3 scripts/doctor.py --json`.
+    - Expected: all report `sota-readiness.v1`, include event intake and
+      operator doctor capabilities, and clearly distinguish local-ready,
+      env-gated, partial, and provider-contract items.
+
+36. Event intake
+    - Post a webhook-style JSON payload with `idempotency_key`, `prompt`, and
+      `repo_path` to `/events/intake`, then post it again.
+    - Expected: first request creates exactly one queued job; second request
+      returns `duplicate: true` with the same job id.
+
+37. Signed event intake
+    - Set `AGENT_CLOUD_EVENT_INGEST_SECRET`, send one request with a valid
+      `x-agent-cloud-event-signature`, and one with an invalid signature.
+    - Expected: valid request is accepted; invalid request returns `401` before
+      any job is created.
+
 ## Evidence To Show In A Demo
 
 The demo should make these proof points visible without much narration:
@@ -333,5 +357,7 @@ worker adapters are built and verified. DuckDB is an embedded local/lab backend,
 not managed multi-writer production state. Postgres is available only through the
 optional DSN-backed adapter. Vercel preview and Vercel Sandbox modes are provider
 contracts unless their live env flags and credentials are configured and
-verified. Generic Git sync is provider agnostic, while provider-native PR/MR
-creation is implemented only for GitHub App jobs today.
+verified. Event intake is unsigned local mode until
+`AGENT_CLOUD_EVENT_INGEST_SECRET` is configured and signatures are verified.
+Generic Git sync is provider agnostic, while provider-native PR/MR creation is
+implemented only for GitHub App jobs today.

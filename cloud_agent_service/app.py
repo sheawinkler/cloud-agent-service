@@ -13,6 +13,7 @@ from pydantic import BaseModel, Field
 
 from cloud_agent_service.callback_auth import CALLBACK_TOKEN_HEADER
 from cloud_agent_service.cloud_dispatch import EcsDispatchPlanner
+from cloud_agent_service.event_ingest import EVENT_SIGNATURE_HEADER, EventIngestor
 from cloud_agent_service.lab_warehouse import LabWarehouse
 from cloud_agent_service.models import (
     DeploymentPolicy,
@@ -24,6 +25,7 @@ from cloud_agent_service.models import (
 )
 from cloud_agent_service.orchestrator import LocalJobQueue, LocalOrchestrator
 from cloud_agent_service.pipeline import AgentCloudFlow, RequestValidationError
+from cloud_agent_service.readiness import ReadinessReporter
 from cloud_agent_service.store import JobStore
 from cloud_agent_service.task_corpus import default_replayable_corpus
 
@@ -121,6 +123,7 @@ flow = build_flow()
 job_queue = LocalJobQueue()
 orchestrator = LocalOrchestrator(flow, job_queue)
 ecs_dispatch_planner = EcsDispatchPlanner()
+event_ingestor = EventIngestor()
 app = FastAPI(title="Cloud Agent Service MVP", version="0.1.0")
 
 
@@ -128,6 +131,11 @@ app = FastAPI(title="Cloud Agent Service MVP", version="0.1.0")
 async def api_key_guard(request: Request, call_next):
     keys = _configured_api_keys()
     public_paths = {"/health", "/auth/status"}
+    if (
+        request.url.path == "/events/intake"
+        and os.environ.get("AGENT_CLOUD_EVENT_INGEST_SECRET", "").strip()
+    ):
+        return await call_next(request)
     if keys and request.url.path not in public_paths:
         if request.headers.get("x-api-key") not in keys:
             return JSONResponse(
@@ -227,6 +235,11 @@ def callback_auth_status() -> dict[str, Any]:
     return flow.callback_auth_status()
 
 
+@app.get("/integrations/events/status")
+def event_ingest_status() -> dict[str, Any]:
+    return event_ingestor.status()
+
+
 @app.get("/integrations/live/status")
 def live_provider_status() -> dict[str, Any]:
     return {
@@ -237,6 +250,23 @@ def live_provider_status() -> dict[str, Any]:
         "deployment": asdict(flow.deployer.status()),
         "execution": asdict(flow.execution_provider.status()),
         "callback_auth": flow.callback_auth_status(),
+        "events": event_ingestor.status(),
+    }
+
+
+@app.get("/readiness/scorecard")
+def readiness_scorecard() -> dict[str, Any]:
+    return ReadinessReporter(flow, ecs_dispatch_planner).report()
+
+
+@app.get("/readiness/features")
+def readiness_features() -> dict[str, Any]:
+    reporter = ReadinessReporter(flow, ecs_dispatch_planner)
+    capabilities = reporter.capabilities()
+    return {
+        "schema_version": reporter.schema_version,
+        "features": reporter.feature_list(capabilities),
+        "capabilities": [capability.__dict__ for capability in capabilities],
     }
 
 
@@ -488,6 +518,94 @@ def user_quota(user_id: str) -> dict[str, Any]:
         "token_budget_quota": quota,
         "token_budget_remaining": remaining,
     }
+
+
+@app.post("/events/intake")
+async def intake_event(request: Request, background_tasks: BackgroundTasks) -> dict[str, Any]:
+    body = await request.body()
+    signature = request.headers.get(EVENT_SIGNATURE_HEADER)
+    signature_result = event_ingestor.verify_signature(body, signature)
+    if not signature_result.ok:
+        raise HTTPException(status_code=401, detail="invalid event signature")
+    try:
+        raw_payload = json.loads(body.decode("utf-8") or "{}")
+    except json.JSONDecodeError as exc:
+        raise HTTPException(status_code=400, detail="event payload must be JSON") from exc
+    if not isinstance(raw_payload, dict):
+        raise HTTPException(status_code=400, detail="event payload must be a JSON object")
+    intake = event_ingestor.parse(raw_payload, _request_headers(request))
+    existing = flow.store.get_event_intake_by_key(intake.idempotency_key)
+    if existing:
+        return {
+            "schema_version": "event-intake-result.v1",
+            "duplicate": True,
+            "status": existing["status"],
+            "job_id": existing.get("job_id"),
+            "intake": existing,
+        }
+
+    job_id = None
+    status = "accepted_no_job"
+    job_request = None
+    try:
+        job_request = event_ingestor.to_job_request(intake)
+        if job_request is not None:
+            _enforce_user_quota(job_request)
+            job_id = flow.create_job(job_request)
+            orchestrator.submit(job_id)
+            status = "queued"
+            flow.store.add_event(
+                job_id,
+                "event_intake_linked",
+                {
+                    "intake_id": intake.intake_id,
+                    "source": intake.source,
+                    "event_type": intake.event_type,
+                },
+            )
+            if intake.run_immediately:
+                background_tasks.add_task(orchestrator.run_queued_once)
+    except (RequestValidationError, ValueError) as exc:
+        status = "rejected"
+        flow.store.upsert_event_intake(
+            {
+                "intake_id": intake.intake_id,
+                "source": intake.source,
+                "event_type": intake.event_type,
+                "idempotency_key": intake.idempotency_key,
+                "signature_status": signature_result.status,
+                "status": status,
+                "job_id": job_id,
+                "payload": intake.redacted_payload,
+            }
+        )
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    stored = flow.store.upsert_event_intake(
+        {
+            "intake_id": intake.intake_id,
+            "source": intake.source,
+            "event_type": intake.event_type,
+            "idempotency_key": intake.idempotency_key,
+            "signature_status": signature_result.status,
+            "status": status,
+            "job_id": job_id,
+            "payload": intake.redacted_payload,
+        }
+    )
+    return {
+        "schema_version": "event-intake-result.v1",
+        "duplicate": False,
+        "status": status,
+        "job_id": job_id,
+        "run_immediately": intake.run_immediately if job_request is not None else False,
+        "intake": stored,
+    }
+
+
+@app.get("/events/intakes")
+def list_event_intakes(limit: int = 50) -> dict[str, Any]:
+    return {"intakes": flow.store.list_event_intakes(limit=limit)}
 
 
 @app.post("/jobs/run-next")
@@ -777,6 +895,10 @@ def _worker_callback_base() -> str:
     return os.environ.get("AGENT_CLOUD_STATUS_CALLBACK_URL", "local://jobs").strip() or "local://jobs"
 
 
+def _request_headers(request: Request) -> dict[str, str]:
+    return {key.lower(): value for key, value in request.headers.items()}
+
+
 def _enforce_user_quota(request: JobRequest) -> None:
     quota = _user_token_quota()
     if quota is None:
@@ -916,6 +1038,14 @@ def _lab_dashboard_html() -> str:
         <pre id="appliance"></pre>
       </div>
       <div class="panel">
+        <h2>Readiness Scorecard</h2>
+        <pre id="readiness"></pre>
+      </div>
+      <div class="panel">
+        <h2>Event Intake</h2>
+        <pre id="eventsIntake"></pre>
+      </div>
+      <div class="panel">
         <h2>Deployment</h2>
         <pre id="deployment"></pre>
       </div>
@@ -1023,6 +1153,8 @@ def _lab_dashboard_html() -> str:
         callbackAuth,
         models,
         appliance,
+        readiness,
+        eventIntakes,
         deployment,
         execution,
         cases,
@@ -1037,6 +1169,8 @@ def _lab_dashboard_html() -> str:
         fetch('/integrations/callback-auth/status').then((response) => response.json()),
         fetch('/models').then((response) => response.json()),
         fetch('/lab/appliance/status').then((response) => response.json()),
+        fetch('/readiness/scorecard').then((response) => response.json()),
+        fetch('/events/intakes?limit=5').then((response) => response.json()),
         fetch('/integrations/deploy/status').then((response) => response.json()),
         fetch('/integrations/execution/status').then((response) => response.json()),
         fetch('/analysis/cases').then((response) => response.json()),
@@ -1062,6 +1196,13 @@ def _lab_dashboard_html() -> str:
         JSON.stringify(callbackAuth, null, 2);
       document.getElementById('models').textContent = JSON.stringify(models, null, 2);
       document.getElementById('appliance').textContent = JSON.stringify(appliance, null, 2);
+      document.getElementById('readiness').textContent = JSON.stringify({
+        score: readiness.readiness_score,
+        production_ready: readiness.production_ready,
+        counts: readiness.status_counts,
+        critical_blockers: readiness.critical_blockers
+      }, null, 2);
+      document.getElementById('eventsIntake').textContent = JSON.stringify(eventIntakes, null, 2);
       document.getElementById('deployment').textContent = JSON.stringify(deployment, null, 2);
       document.getElementById('execution').textContent = JSON.stringify(execution, null, 2);
       document.getElementById('leases').textContent = JSON.stringify(leases, null, 2);

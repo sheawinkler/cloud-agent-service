@@ -13,6 +13,8 @@ providers are opt-in contracts unless their explicit env flags and credentials
 are configured.
 Postgres, signed callbacks, provider-native forge reviews, and external model
 edit adapters are opt-in and must be verified before claiming live behavior.
+Readiness scorecards and event intake exist to make those gaps explicit rather
+than hiding them in prose.
 
 ## Boundaries
 
@@ -38,6 +40,12 @@ edit adapters are opt-in and must be verified before claiming live behavior.
   `AGENT_CLOUD_ENABLE_OPENAI_EDIT_ADAPTER` or
   `AGENT_CLOUD_ENABLE_EXTERNAL_HARNESS` is truthy and `OPENAI_API_KEY` is
   configured. Otherwise it is a contract/fallback path.
+- Treat `/readiness/scorecard` and `scripts/doctor.py` as the source of truth
+  for production cutover blockers.
+- Treat `/events/intake` as unsigned local mode unless
+  `AGENT_CLOUD_EVENT_INGEST_SECRET` is configured and incoming requests include
+  a valid `x-agent-cloud-event-signature` HMAC. Event retries must dedupe by
+  idempotency key.
 - Treat `deployed: local mock deployment recorded` as a local artifact, not a
   production deployment.
 - Treat `/jobs/<job_id>/cloud-dispatch-plan` as dry-run. Treat
@@ -78,6 +86,8 @@ edit adapters are opt-in and must be verified before claiming live behavior.
 - `store.py`: operational job, event, callback, lease, and lab-run persistence.
 - `database.py`: SQLite/DuckDB embedded adapter plus optional Postgres adapter.
 - `callback_auth.py`: worker callback HMAC token contract.
+- `event_ingest.py`: signed/idempotent webhook and event intake contract.
+- `readiness.py`: feature readiness scorecard and production cutover blockers.
 - `forge.py`: generic Git and provider-native review capability contracts.
 - `lab_warehouse.py`: DuckDB materialized lab read model.
 - `orchestrator.py`: local queue plus persisted queued-job runner.
@@ -108,9 +118,11 @@ edit adapters are opt-in and must be verified before claiming live behavior.
 - `scripts/evaluate_mvp.py`: golden buy-button task evaluator.
 - `scripts/evaluate_task_suite.py`: multi-run lab task-suite evaluator.
 - `scripts/smoke_api.py`: standard-library smoke suite for the live API.
+- `scripts/doctor.py`: local readiness/cutover scorecard.
 - `EVALUATION.md`: criteria for judging product and operational readiness.
 - `examples/agent_contract.json`: example job payload and final result contract.
   Terminal jobs are indexed in `lab_runs` for model/agent promotion summaries.
+- `docs/sota-feature-readiness.md`: comprehensive feature-readiness map.
 
 ## Run
 
@@ -180,11 +192,16 @@ curl -sS http://127.0.0.1:8000/integrations/cloud/status
 curl -sS http://127.0.0.1:8000/integrations/cloud/e2e-status
 curl -sS http://127.0.0.1:8000/integrations/forge/status
 curl -sS http://127.0.0.1:8000/integrations/callback-auth/status
+curl -sS http://127.0.0.1:8000/integrations/events/status
+curl -sS http://127.0.0.1:8000/readiness/scorecard
+curl -sS http://127.0.0.1:8000/readiness/features
+curl -sS http://127.0.0.1:8000/events/intakes
 curl -sS http://127.0.0.1:8000/integrations/database/status
 curl -sS http://127.0.0.1:8000/integrations/deploy/status
 curl -sS http://127.0.0.1:8000/integrations/execution/status
 curl -sS http://127.0.0.1:8000/jobs/<job_id>/cloud-dispatch-plan
 python3 scripts/demo_lab_in_a_box.py
+python3 scripts/doctor.py --json
 python -m cloud_agent_service.worker --claim-next
 ```
 

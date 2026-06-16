@@ -8,8 +8,10 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from cloud_agent_service.cloud_dispatch import EcsDispatchPlanner
 from cloud_agent_service.models import DeploymentPolicy, JobRequest, RoutingPolicy
 from cloud_agent_service.pipeline import AgentCloudFlow
+from cloud_agent_service.readiness import ReadinessReporter
 from cloud_agent_service.store import JobStore
 
 
@@ -60,6 +62,7 @@ def run_lab_in_a_box() -> dict[str, object]:
         )
         report = flow.experiment_report(experiment.experiment_id)
         lab_summary = flow.lab_summary()
+        readiness = ReadinessReporter(flow, EcsDispatchPlanner()).report()
         checks = {
             "baseline_succeeded": baseline.status.value == "succeeded",
             "baseline_promoted": baseline.promotion_decision.get("status") == "promote",
@@ -68,6 +71,7 @@ def run_lab_in_a_box() -> dict[str, object]:
             "warehouse_refreshed": bool(warehouse.get("ready")) or lab_summary["total_runs"] >= 1,
             "router_recommended": route.selected_harness_id == "local-template",
             "holdout_guarded": dataset.lineage["holdout_guard"]["use_for_training"] is False,
+            "readiness_reported": readiness["schema_version"] == "sota-readiness.v1",
         }
         return {
             "schema_version": "lab-in-a-box-demo.v1",
@@ -80,6 +84,12 @@ def run_lab_in_a_box() -> dict[str, object]:
             "dataset_export": asdict(dataset),
             "warehouse": warehouse,
             "router_decision": asdict(route),
+            "readiness": {
+                "readiness_score": readiness["readiness_score"],
+                "production_ready": readiness["production_ready"],
+                "status_counts": readiness["status_counts"],
+                "critical_blockers": readiness["critical_blockers"],
+            },
             "lab_summary": lab_summary,
             "leaderboard": flow.lab_leaderboard(),
         }

@@ -10,6 +10,7 @@ from unittest.mock import patch
 from cloud_agent_service.cloud_dispatch import EcsDispatchPlanner
 from cloud_agent_service.database import PostgresConnection, production_database_status
 from cloud_agent_service.dataset_export import SlmDatasetExporter
+from cloud_agent_service.event_ingest import EventIngestor
 from cloud_agent_service.execution import ExecutionProvider
 from cloud_agent_service.forge import ForgeRegistry
 from cloud_agent_service.harness_registry import HarnessRegistry
@@ -31,6 +32,7 @@ from cloud_agent_service.pipeline import (
     RequestValidationError,
     RequestValidator,
 )
+from cloud_agent_service.readiness import ReadinessReporter
 from cloud_agent_service.store import JobStore
 
 
@@ -402,6 +404,85 @@ class CloudAgentServiceFlowTests(unittest.TestCase):
         self.assertIn("<redacted_secret>", redacted)
         self.assertNotIn("/Users/sheawinkler/private", redacted)
         self.assertNotIn("OPENAI_API_KEY=abc123", redacted)
+
+    def test_event_ingestor_signs_redacts_and_builds_job_request(self):
+        body = json.dumps(
+            {
+                "source": "github",
+                "event_type": "issues",
+                "idempotency_key": "issue-1",
+                "repo_path": "/tmp/shop",
+                "prompt": "For my shopping website, create a buy button.",
+                "OPENAI_API_KEY": "test-secret",
+                "payload_text": "/Users/sheawinkler/private TOKEN=abc123",
+            },
+            sort_keys=True,
+        ).encode("utf-8")
+        ingestor = EventIngestor(secret="event-secret")
+        signature = ingestor.signature_for_body(body, "event-secret")
+        signature_result = ingestor.verify_signature(body, signature)
+        intake = ingestor.parse(json.loads(body), {})
+        request = ingestor.to_job_request(intake)
+
+        self.assertTrue(signature_result.ok)
+        self.assertFalse(ingestor.verify_signature(body, "bad-signature").ok)
+        self.assertEqual("issue-1", intake.idempotency_key)
+        self.assertEqual("<redacted_secret>", intake.redacted_payload["OPENAI_API_KEY"])
+        self.assertEqual(
+            "<redacted_path> <redacted_secret>",
+            intake.redacted_payload["payload_text"],
+        )
+        self.assertEqual("For my shopping website, create a buy button.", request.prompt)
+        self.assertEqual(RepoProvider.LOCAL, request.repo_provider)
+
+    def test_event_intake_store_deduplicates_by_key(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = JobStore(Path(tmp) / "jobs.sqlite3")
+            first = store.upsert_event_intake(
+                {
+                    "intake_id": "evt_one",
+                    "source": "github",
+                    "event_type": "issues",
+                    "idempotency_key": "issue-1",
+                    "signature_status": "unsigned-local",
+                    "status": "accepted_no_job",
+                    "payload": {"title": "first"},
+                }
+            )
+            second = store.upsert_event_intake(
+                {
+                    "intake_id": "evt_two",
+                    "source": "github",
+                    "event_type": "issues",
+                    "idempotency_key": "issue-1",
+                    "signature_status": "unsigned-local",
+                    "status": "queued",
+                    "job_id": "job_123",
+                    "payload": {"title": "second"},
+                }
+            )
+
+            self.assertEqual("evt_one", first["intake_id"])
+            self.assertEqual("evt_one", second["intake_id"])
+            self.assertEqual("queued", second["status"])
+            self.assertEqual("job_123", second["job_id"])
+            self.assertEqual(1, len(store.list_event_intakes()))
+
+    def test_readiness_report_lists_operator_and_event_capabilities(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            flow = self._build_flow(root)
+            report = ReadinessReporter(flow, EcsDispatchPlanner()).report()
+            capability_ids = {
+                capability["capability_id"] for capability in report["capabilities"]
+            }
+
+            self.assertEqual("sota-readiness.v1", report["schema_version"])
+            self.assertIn("event-intake", capability_ids)
+            self.assertIn("operator-doctor", capability_ids)
+            self.assertIn("tenant-isolation", capability_ids)
+            self.assertGreater(report["readiness_score"], 0)
+            self.assertLessEqual(report["readiness_score"], 1)
 
     def test_router_recommend_and_auto_select_policy(self):
         with tempfile.TemporaryDirectory() as tmp:

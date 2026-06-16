@@ -261,6 +261,22 @@ class JobStore:
                 )
                 conn.execute(
                     """
+                    CREATE TABLE IF NOT EXISTS event_intakes (
+                        intake_id TEXT PRIMARY KEY,
+                        source TEXT NOT NULL,
+                        event_type TEXT NOT NULL,
+                        idempotency_key TEXT NOT NULL UNIQUE,
+                        signature_status TEXT NOT NULL,
+                        status TEXT NOT NULL,
+                        job_id TEXT,
+                        payload_json TEXT NOT NULL,
+                        created_at TEXT NOT NULL,
+                        updated_at TEXT NOT NULL
+                    )
+                    """
+                )
+                conn.execute(
+                    """
                     CREATE TABLE IF NOT EXISTS artifact_refs (
                         id INTEGER PRIMARY KEY AUTOINCREMENT,
                         job_id TEXT NOT NULL,
@@ -329,6 +345,12 @@ class JobStore:
                     """
                     CREATE INDEX IF NOT EXISTS idx_job_leases_expires_at
                     ON job_leases (expires_at)
+                    """
+                )
+                conn.execute(
+                    """
+                    CREATE INDEX IF NOT EXISTS idx_event_intakes_created_at
+                    ON event_intakes (created_at)
                     """
                 )
 
@@ -1028,6 +1050,59 @@ class JobStore:
             ).fetchall()
         return [self._worker_callback_row(row) for row in rows]
 
+    def get_event_intake_by_key(self, idempotency_key: str) -> dict[str, Any] | None:
+        with closing(self._connect()) as conn:
+            row = conn.execute(
+                "SELECT * FROM event_intakes WHERE idempotency_key = ?",
+                (idempotency_key,),
+            ).fetchone()
+        return self._event_intake_row(row) if row else None
+
+    def upsert_event_intake(self, intake: dict[str, Any]) -> dict[str, Any]:
+        now = utc_now()
+        with closing(self._connect()) as conn:
+            with conn:
+                conn.execute(
+                    """
+                    INSERT INTO event_intakes (
+                        intake_id, source, event_type, idempotency_key, signature_status,
+                        status, job_id, payload_json, created_at, updated_at
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(idempotency_key) DO UPDATE SET
+                        status = excluded.status,
+                        job_id = COALESCE(excluded.job_id, event_intakes.job_id),
+                        payload_json = excluded.payload_json,
+                        updated_at = excluded.updated_at
+                    """,
+                    (
+                        intake["intake_id"],
+                        intake["source"],
+                        intake["event_type"],
+                        intake["idempotency_key"],
+                        intake["signature_status"],
+                        intake["status"],
+                        intake.get("job_id"),
+                        json.dumps(intake.get("payload", {}), sort_keys=True),
+                        now,
+                        now,
+                    ),
+                )
+        stored = self.get_event_intake_by_key(intake["idempotency_key"])
+        return stored or intake
+
+    def list_event_intakes(self, limit: int = 50) -> list[dict[str, Any]]:
+        with closing(self._connect()) as conn:
+            rows = conn.execute(
+                """
+                SELECT * FROM event_intakes
+                ORDER BY created_at DESC
+                LIMIT ?
+                """,
+                (limit,),
+            ).fetchall()
+        return [self._event_intake_row(row) for row in rows]
+
     def add_artifact_refs(self, refs: list[dict[str, Any]]) -> None:
         if not refs:
             return
@@ -1443,6 +1518,12 @@ class JobStore:
 
     @staticmethod
     def _worker_callback_row(row: Any) -> dict[str, Any]:
+        data = dict(row)
+        data["payload"] = json.loads(data.pop("payload_json"))
+        return data
+
+    @staticmethod
+    def _event_intake_row(row: Any) -> dict[str, Any]:
         data = dict(row)
         data["payload"] = json.loads(data.pop("payload_json"))
         return data

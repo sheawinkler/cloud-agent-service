@@ -121,6 +121,7 @@ def run_smoke(base_url: str, repo_path: str) -> dict[str, Any]:
             "deployment",
             "execution",
             "callback_auth",
+            "events",
         }.issubset(set(live)),
         response=live,
     )
@@ -152,6 +153,40 @@ def run_smoke(base_url: str, repo_path: str) -> dict[str, Any]:
         callback_auth["mode"] in {"unsigned-local", "signed-hmac"}
         and callback_auth["header"] == "x-agent-cloud-callback-token",
         response=callback_auth,
+    )
+
+    event_status = client.get("/integrations/events/status")
+    record(
+        results,
+        "event_ingest_status",
+        event_status["provider"] == "generic-webhook"
+        and event_status["mode"] in {"unsigned-local", "signed-hmac"}
+        and event_status["signature_header"] == "x-agent-cloud-event-signature",
+        response=event_status,
+    )
+
+    readiness = client.get("/readiness/scorecard")
+    capability_ids = {
+        capability["capability_id"] for capability in readiness["capabilities"]
+    }
+    record(
+        results,
+        "readiness_scorecard",
+        readiness["schema_version"] == "sota-readiness.v1"
+        and "event-intake" in capability_ids
+        and "operator-doctor" in capability_ids
+        and 0 <= readiness["readiness_score"] <= 1,
+        score=readiness["readiness_score"],
+        blockers=readiness["critical_blockers"],
+    )
+
+    features = client.get("/readiness/features")
+    record(
+        results,
+        "readiness_features",
+        features["schema_version"] == "sota-readiness.v1"
+        and any(feature["id"] == "event-intake" for feature in features["features"]),
+        features=len(features["features"]),
     )
 
     deployment = client.get("/integrations/deploy/status")
@@ -261,6 +296,45 @@ def run_smoke(base_url: str, repo_path: str) -> dict[str, Any]:
         and "model_bakeoff_repo_edit" in route["nearest_analysis_cases"],
         confidence=route["confidence"],
         fallback=route["fallback"],
+    )
+
+    event = client.post(
+        "/events/intake",
+        {
+            "source": "github",
+            "event_type": "issues",
+            "idempotency_key": "smoke-event-issue",
+            "prompt": "For my shopping website, create a buy button.",
+            "repo_path": repo_path,
+            "deploy_policy": "manual",
+            "run_immediately": False,
+        },
+    )
+    event_dup = client.post(
+        "/events/intake",
+        {
+            "source": "github",
+            "event_type": "issues",
+            "idempotency_key": "smoke-event-issue",
+            "prompt": "This duplicate should not create another job.",
+            "repo_path": repo_path,
+            "run_immediately": False,
+        },
+    )
+    event_intakes = client.get("/events/intakes")
+    record(
+        results,
+        "event_intake",
+        event["status"] == "queued"
+        and event["job_id"]
+        and event_dup["duplicate"] is True
+        and event_dup["job_id"] == event["job_id"]
+        and any(
+            item["idempotency_key"] == "smoke-event-issue"
+            for item in event_intakes["intakes"]
+        ),
+        job_id=event["job_id"],
+        duplicate=event_dup["duplicate"],
     )
 
     job = client.post(
@@ -499,6 +573,8 @@ def run_smoke(base_url: str, repo_path: str) -> dict[str, Any]:
         and "Callback Auth" in lab_ui
         and "Model Runtimes" in lab_ui
         and "Lab Appliance" in lab_ui
+        and "Readiness Scorecard" in lab_ui
+        and "Event Intake" in lab_ui
         and "Worker Leases" in lab_ui
         and "Provenance" in lab_ui
         and "Analysis Cases" in lab_ui

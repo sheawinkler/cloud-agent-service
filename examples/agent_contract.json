@@ -180,6 +180,47 @@
       "tokens_used": 192
     }
   ],
+  "event_intake_example": {
+    "schema_version": "event-intake-result.v1",
+    "duplicate": false,
+    "status": "queued",
+    "job_id": "demo-job-001",
+    "run_immediately": false,
+    "intake": {
+      "intake_id": "evt_demo",
+      "source": "github",
+      "event_type": "issues",
+      "idempotency_key": "github-issue-123",
+      "signature_status": "unsigned-local",
+      "status": "queued",
+      "job_id": "demo-job-001",
+      "payload": {
+        "source": "github",
+        "event_type": "issues",
+        "idempotency_key": "github-issue-123",
+        "prompt": "For my shopping website, create a buy button.",
+        "repo_path": "/host_repo",
+        "run_immediately": false
+      }
+    }
+  },
+  "readiness_example": {
+    "schema_version": "sota-readiness.v1",
+    "readiness_score": 0.75,
+    "production_ready": false,
+    "status_counts": {
+      "ready": 14,
+      "local_ready": 4,
+      "env_gated": 6,
+      "partial": 3,
+      "contract": 1
+    },
+    "critical_blockers": [
+      "ecs-submit",
+      "signed-worker-callbacks",
+      "event-intake"
+    ]
+  },
   "final_result": {
     "job_id": "demo-job-001",
     "status": "succeeded",
