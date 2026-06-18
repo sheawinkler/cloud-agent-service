@@ -42,6 +42,7 @@ the deploy boundary when evidence is weak.
 | OpenAI edit adapter | A live model-backed edit path exists behind explicit gates. | `openai-codex-cli` can use `AGENT_CLOUD_ENABLE_OPENAI_EDIT_ADAPTER` plus `OPENAI_API_KEY`; otherwise it falls back to local contract execution. |
 | Lab appliance | The lab can be demonstrated end to end without external services. | `scripts/demo_lab_in_a_box.py` seeds a repo, runs a lab job, exports JSONL, refreshes the warehouse, and reports router/leaderboard state. |
 | Readiness scorecard | Production gaps are executable status, not hand-wavy roadmap prose. | `/readiness/scorecard`, `/readiness/features`, and `scripts/doctor.py` report ready/local-ready/env-gated/partial/contract capabilities and critical blockers. |
+| Cutover rehearsal | Operators can prove the cloud cutover contract without touching live cloud resources. | `/cutover/status`, `/cutover/rehearse`, and `scripts/rehearse_cutover.py` prove signed callbacks, signed event intake, redacted ECS dry-run shape, and blocker binding. |
 | Event intake | External events can create bounded jobs safely. | `/events/intake` verifies HMAC when configured, dedupes by idempotency key, redacts payloads, and only dispatches when a repo target exists. |
 | Provenance | Successful runs leave a compact manifest tying evidence to hashes. | `/jobs/<id>/provenance` returns manifest path, digest, deployment record, and source fingerprints. |
 | Safety | Failed tests or policies stop sync/deploy. | Gate failure returns `failed` before mock PR/deploy. |
@@ -88,6 +89,7 @@ the deploy boundary when evidence is weak.
 - Forge-native review coverage by provider.
 - Lab appliance demo success rate.
 - Readiness score and critical blocker count.
+- Cutover rehearsal pass/fail count and remaining production blockers.
 - Event intake accepted/rejected/duplicate counts.
 - Event intake signature rejection count.
 - Average changed files per job.
@@ -298,13 +300,21 @@ the deploy boundary when evidence is weak.
       operator doctor capabilities, and clearly distinguish local-ready,
       env-gated, partial, and provider-contract items.
 
-36. Event intake
+36. Cutover rehearsal
+    - Run `python3 scripts/rehearse_cutover.py`, call `/cutover/status`, and
+      post a local repo to `/cutover/rehearse`.
+    - Expected: report schema is `cutover-rehearsal.v1`, critical local proofs
+      pass, live external calls are false, callback tokens are redacted from
+      the ECS dry-run request, and the decision remains blocked while critical
+      readiness blockers exist.
+
+37. Event intake
     - Post a webhook-style JSON payload with `idempotency_key`, `prompt`, and
       `repo_path` to `/events/intake`, then post it again.
     - Expected: first request creates exactly one queued job; second request
       returns `duplicate: true` with the same job id.
 
-37. Signed event intake
+38. Signed event intake
     - Set `AGENT_CLOUD_EVENT_INGEST_SECRET`, send one request with a valid
       `x-agent-cloud-event-signature`, and one with an invalid signature.
     - Expected: valid request is accepted; invalid request returns `401` before

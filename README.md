@@ -25,6 +25,9 @@ successful runs.
 The current operations layer adds a runtime SOTA readiness scorecard, a local
 doctor CLI, and signed/idempotent event intake so GitHub/GitLab/CI/webhook
 events can create bounded jobs without duplicate dispatch on provider retries.
+It also adds a production cutover rehearsal that proves signed callbacks,
+signed event intake, and a redacted ECS dry-run plan without calling live cloud
+providers.
 
 Local repo jobs still use mock PR and deployment artifacts. Generic Git jobs
 clone from `git_url` and push an agent branch back to `origin`. GitHub repo jobs
@@ -91,6 +94,8 @@ Monitoring:
 - `forge.py`: provider-agnostic Git/GitHub/GitLab/Bitbucket/Gitea review status.
 - `event_ingest.py`: signed, idempotent event/webhook intake contract.
 - `readiness.py`: feature readiness scorecard and production cutover blockers.
+- `cutover.py`: deterministic cutover rehearsal report for signed callback,
+  event-signature, ECS dry-run, and readiness blocker proof.
 - `orchestrator.py`: local in-memory queue plus persisted queued-job runner.
 - `worker.py`: container-friendly single-job or claim-next entry point with
   optional HTTP worker callbacks.
@@ -124,6 +129,7 @@ Monitoring:
 - `scripts/demo_local_flow.py`: no-cloud, no-Docker proof path.
 - `scripts/evaluate_task_suite.py`: multi-run task-suite evaluator.
 - `scripts/doctor.py`: local readiness/cutover doctor.
+- `scripts/rehearse_cutover.py`: no-cloud production cutover rehearsal.
 - `llm.txt`: compact orientation file for LLM agents.
 - `docs/sota-feature-readiness.md`: comprehensive feature-readiness map.
 
@@ -161,6 +167,9 @@ Monitoring:
 27. Expose a readiness scorecard that separates live, env-gated, local-ready,
     partial, and provider-contract capabilities.
 28. Accept signed/idempotent event intake for webhook-triggered jobs.
+29. Rehearse production cutover locally without live cloud calls, proving
+    signed callbacks, signed event intake, ECS dry-run redaction, and blocker
+    binding.
 
 ## Readiness Scorecard And Event Intake
 
@@ -171,6 +180,8 @@ python3 scripts/doctor.py --json
 python3 scripts/doctor.py --require-production-ready
 curl -sS http://127.0.0.1:8000/readiness/scorecard
 curl -sS http://127.0.0.1:8000/readiness/features
+curl -sS http://127.0.0.1:8000/cutover/status
+python3 scripts/rehearse_cutover.py
 ```
 
 `/readiness/scorecard` reports `ready`, `local_ready`, `env_gated`, `partial`,
@@ -184,6 +195,13 @@ deduped by `idempotency_key` or `x-agent-cloud-event-id`. Set
 `AGENT_CLOUD_EVENT_INGEST_SECRET` to require
 `x-agent-cloud-event-signature: sha256=<hmac_hex>` over the raw body. Without a
 secret the endpoint is unsigned local mode, intended for demos only.
+
+`POST /cutover/rehearse` creates a queued local rehearsal job and returns
+`cutover-rehearsal.v1`. The report proves job payload construction, job-scoped
+worker callback HMAC verification, signed event-intake HMAC verification, an
+ECS/Fargate `run_task` request with callback token redaction, and the current
+readiness critical blockers. It does not run the agent, call AWS, push Git
+branches, or deploy.
 
 ```bash
 curl -sS -X POST http://127.0.0.1:8000/events/intake \
@@ -350,6 +368,7 @@ python3 -m compileall cloud_agent_service scripts tests
 python3 scripts/evaluate_mvp.py
 python3 scripts/evaluate_task_suite.py
 python3 scripts/export_slm_dataset.py --limit 50
+python3 scripts/rehearse_cutover.py
 python3 -m unittest tests.test_cloud_agent_service_flow
 python3 -m unittest discover -s tests
 ```
@@ -427,6 +446,10 @@ curl -sS http://127.0.0.1:8000/integrations/events/status
 curl -sS http://127.0.0.1:8000/integrations/cloud/e2e-status
 curl -sS http://127.0.0.1:8000/readiness/scorecard
 curl -sS http://127.0.0.1:8000/readiness/features
+curl -sS http://127.0.0.1:8000/cutover/status
+curl -X POST http://127.0.0.1:8000/cutover/rehearse \
+  -H 'content-type: application/json' \
+  -d '{"repo_path":"/host_repo"}'
 curl -sS http://127.0.0.1:8000/events/intakes
 curl -sS http://127.0.0.1:8000/lab/appliance/status
 curl -sS http://127.0.0.1:8000/lab/warehouse/status

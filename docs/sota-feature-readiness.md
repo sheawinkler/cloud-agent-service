@@ -8,8 +8,10 @@ Runtime source of truth:
 
 ```bash
 python3 scripts/doctor.py --json
+python3 scripts/rehearse_cutover.py
 curl -sS http://127.0.0.1:8000/readiness/scorecard
 curl -sS http://127.0.0.1:8000/readiness/features
+curl -sS http://127.0.0.1:8000/cutover/status
 ```
 
 ## Feature Families
@@ -26,7 +28,7 @@ curl -sS http://127.0.0.1:8000/readiness/features
 | Model runtime | local deterministic, OpenAI Responses gated path | `/models` |
 | Harness runtime | top-20 registry, local/Pi/OpenAI adapters, custom contracts | `/harnesses` |
 | Automation | signed idempotent webhook/event intake | `/integrations/events/status`, `/events/intakes` |
-| Operations | readiness scorecard and doctor | `/readiness/scorecard`, `scripts/doctor.py` |
+| Operations | readiness scorecard, doctor, and cutover rehearsal | `/readiness/scorecard`, `/cutover/status`, `scripts/rehearse_cutover.py` |
 | Multi-tenant | API keys, quota guard, user-scoped jobs | `/auth/status`, `/users/{id}/quota` |
 
 ## Still Not Claimed Live By Default
@@ -45,6 +47,8 @@ curl -sS http://127.0.0.1:8000/readiness/features
   `AGENT_CLOUD_DB_PROVIDER=postgres`, a DSN, and `psycopg`.
 - Vercel preview/Sandbox: contract unless explicit provider flags and tokens
   are configured and verified.
+- Cutover rehearsal: local proof only; it does not submit ECS, push Git
+  branches, deploy, or clear production readiness blockers.
 
 ## Event Intake Contract
 
@@ -81,3 +85,18 @@ python3 scripts/doctor.py --require-production-ready
 
 That command is intentionally stricter than the local demo path. Local demos can
 be excellent while production readiness remains env-gated.
+
+Run a local production cutover rehearsal before an operator cutover:
+
+```bash
+python3 scripts/rehearse_cutover.py
+curl -sS http://127.0.0.1:8000/cutover/status
+curl -sS -X POST http://127.0.0.1:8000/cutover/rehearse \
+  -H 'content-type: application/json' \
+  -d '{"repo_path":"/host_repo","status_callback_url":"https://api.example.com/jobs"}'
+```
+
+Expected: `cutover-rehearsal.v1` reports `ok: true`,
+`live_external_calls_made: false`, redacted callback tokens in the ECS dry-run
+request, and a `cutover_decision` that remains `blocked_for_production` while
+critical blockers remain.

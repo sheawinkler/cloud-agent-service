@@ -180,6 +180,37 @@ def run_smoke(base_url: str, repo_path: str) -> dict[str, Any]:
         blockers=readiness["critical_blockers"],
     )
 
+    cutover_status = client.get("/cutover/status")
+    record(
+        results,
+        "cutover_status",
+        cutover_status["schema_version"] == "cutover-status.v1"
+        and "cutover-rehearsal" in capability_ids
+        and cutover_status["rehearsal"]["default_live_external_calls"] is False,
+        production_ready=cutover_status["production_ready"],
+        blockers=cutover_status["critical_blockers"],
+    )
+
+    cutover_rehearsal = client.post(
+        "/cutover/rehearse",
+        {
+            "repo_path": repo_path,
+            "status_callback_url": "https://api.example.com/jobs",
+        },
+    )
+    record(
+        results,
+        "cutover_rehearsal",
+        cutover_rehearsal["schema_version"] == "cutover-rehearsal.v1"
+        and cutover_rehearsal["ok"] is True
+        and cutover_rehearsal["live_external_calls_made"] is False
+        and cutover_rehearsal["proofs"]["worker_payload"]["callback_auth"]["token"]
+        == "<redacted>"
+        and cutover_rehearsal["cutover_decision"]["production_deploy_approved"] is False,
+        job_id=cutover_rehearsal["job_id"],
+        decision=cutover_rehearsal["cutover_decision"]["status"],
+    )
+
     features = client.get("/readiness/features")
     record(
         results,
@@ -574,6 +605,7 @@ def run_smoke(base_url: str, repo_path: str) -> dict[str, Any]:
         and "Model Runtimes" in lab_ui
         and "Lab Appliance" in lab_ui
         and "Readiness Scorecard" in lab_ui
+        and "Cutover Rehearsal" in lab_ui
         and "Event Intake" in lab_ui
         and "Worker Leases" in lab_ui
         and "Provenance" in lab_ui

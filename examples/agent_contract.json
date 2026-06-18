@@ -497,5 +497,61 @@
         }
       }
     }
+  },
+  "cutover_rehearsal_example": {
+    "schema_version": "cutover-rehearsal.v1",
+    "ok": true,
+    "live_external_calls_made": false,
+    "job_id": "demo-cutover-job-001",
+    "proofs": {
+      "worker_payload": {
+        "job_id": "demo-cutover-job-001",
+        "model_id": "local-deterministic",
+        "agent_id": "repo-editor-v1",
+        "harness_id": "local-template",
+        "working_branch": "agent/demo-cutover-job-001",
+        "callback_auth": {
+          "mode": "signed-hmac",
+          "configured": true,
+          "header": "x-agent-cloud-callback-token",
+          "token": "<redacted>"
+        }
+      },
+      "worker_callback_hmac": {
+        "mode": "signed-hmac",
+        "header": "x-agent-cloud-callback-token",
+        "token": "<redacted>",
+        "valid_token_verified": true,
+        "wrong_token_rejected": true
+      },
+      "event_intake_hmac": {
+        "mode": "signed-hmac",
+        "header": "x-agent-cloud-event-signature",
+        "signature": "<redacted>",
+        "valid_signature_verified": true,
+        "wrong_signature_rejected": true
+      },
+      "ecs_dry_run": {
+        "provider": "aws-ecs",
+        "mode": "dry-run-contract",
+        "plan_source": "synthetic-local-contract",
+        "live_submit_attempted": false
+      }
+    },
+    "readiness": {
+      "schema_version": "sota-readiness.v1",
+      "production_ready": false,
+      "critical_blockers": [
+        "ecs-submit",
+        "signed-worker-callbacks",
+        "postgres-operational",
+        "tenant-isolation"
+      ]
+    },
+    "cutover_decision": {
+      "status": "blocked_for_production",
+      "reason": "local rehearsal passed but critical production blockers remain",
+      "production_deploy_approved": false
+    }
   }
 }

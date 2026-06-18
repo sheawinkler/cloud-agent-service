@@ -14,7 +14,8 @@ are configured.
 Postgres, signed callbacks, provider-native forge reviews, and external model
 edit adapters are opt-in and must be verified before claiming live behavior.
 Readiness scorecards and event intake exist to make those gaps explicit rather
-than hiding them in prose.
+than hiding them in prose. Cutover rehearsal exists to prove the local signing
+and ECS dry-run contracts without claiming production cutover.
 
 ## Boundaries
 
@@ -42,6 +43,9 @@ than hiding them in prose.
   configured. Otherwise it is a contract/fallback path.
 - Treat `/readiness/scorecard` and `scripts/doctor.py` as the source of truth
   for production cutover blockers.
+- Treat `/cutover/rehearse` and `scripts/rehearse_cutover.py` as local
+  rehearsal proof only. They must not imply live ECS submit, Git mutation,
+  production deployment, or cleared production blockers.
 - Treat `/events/intake` as unsigned local mode unless
   `AGENT_CLOUD_EVENT_INGEST_SECRET` is configured and incoming requests include
   a valid `x-agent-cloud-event-signature` HMAC. Event retries must dedupe by
@@ -88,6 +92,8 @@ than hiding them in prose.
 - `callback_auth.py`: worker callback HMAC token contract.
 - `event_ingest.py`: signed/idempotent webhook and event intake contract.
 - `readiness.py`: feature readiness scorecard and production cutover blockers.
+- `cutover.py`: local cutover rehearsal report for signed callback, signed event
+  intake, ECS dry-run redaction, and blocker binding.
 - `forge.py`: generic Git and provider-native review capability contracts.
 - `lab_warehouse.py`: DuckDB materialized lab read model.
 - `orchestrator.py`: local queue plus persisted queued-job runner.
@@ -119,6 +125,7 @@ than hiding them in prose.
 - `scripts/evaluate_task_suite.py`: multi-run lab task-suite evaluator.
 - `scripts/smoke_api.py`: standard-library smoke suite for the live API.
 - `scripts/doctor.py`: local readiness/cutover scorecard.
+- `scripts/rehearse_cutover.py`: deterministic no-cloud cutover rehearsal.
 - `EVALUATION.md`: criteria for judging product and operational readiness.
 - `examples/agent_contract.json`: example job payload and final result contract.
   Terminal jobs are indexed in `lab_runs` for model/agent promotion summaries.
@@ -195,6 +202,10 @@ curl -sS http://127.0.0.1:8000/integrations/callback-auth/status
 curl -sS http://127.0.0.1:8000/integrations/events/status
 curl -sS http://127.0.0.1:8000/readiness/scorecard
 curl -sS http://127.0.0.1:8000/readiness/features
+curl -sS http://127.0.0.1:8000/cutover/status
+curl -X POST http://127.0.0.1:8000/cutover/rehearse \
+  -H 'content-type: application/json' \
+  -d '{"repo_path":"/host_repo"}'
 curl -sS http://127.0.0.1:8000/events/intakes
 curl -sS http://127.0.0.1:8000/integrations/database/status
 curl -sS http://127.0.0.1:8000/integrations/deploy/status
@@ -202,6 +213,7 @@ curl -sS http://127.0.0.1:8000/integrations/execution/status
 curl -sS http://127.0.0.1:8000/jobs/<job_id>/cloud-dispatch-plan
 python3 scripts/demo_lab_in_a_box.py
 python3 scripts/doctor.py --json
+python3 scripts/rehearse_cutover.py
 python -m cloud_agent_service.worker --claim-next
 ```
 

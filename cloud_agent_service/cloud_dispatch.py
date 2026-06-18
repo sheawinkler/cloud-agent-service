@@ -66,6 +66,19 @@ class EcsDispatchPlanner:
         include_secrets: bool = False,
     ) -> dict[str, Any]:
         config = self.config_from_env()
+        return self.build_run_task_request_for_config(
+            payload,
+            config,
+            include_secrets=include_secrets,
+        )
+
+    def build_run_task_request_for_config(
+        self,
+        payload: WorkerJobPayload,
+        config: EcsDispatchConfig,
+        *,
+        include_secrets: bool = False,
+    ) -> dict[str, Any]:
         callback_env = []
         callback_token = payload.callback_auth.get("token")
         if callback_token:
