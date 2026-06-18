@@ -19,6 +19,11 @@ class ProjectArtifactTests(unittest.TestCase):
             "event-intake-result.v1",
             payload["event_intake_example"]["schema_version"],
         )
+        self.assertEqual(
+            "cutover-rehearsal.v1",
+            payload["cutover_rehearsal_example"]["schema_version"],
+        )
+        self.assertFalse(payload["cutover_rehearsal_example"]["live_external_calls_made"])
         self.assertEqual("sota-readiness.v1", payload["readiness_example"]["schema_version"])
         self.assertIn("git_url", payload["job_payload"])
         self.assertIn("github_repo", payload["job_payload"])
@@ -109,6 +114,13 @@ class ProjectArtifactTests(unittest.TestCase):
         self.assertIn("def export_dataset", content)
         self.assertIn("if __name__ == \"__main__\"", content)
 
+    def test_cutover_rehearsal_script_has_standard_entrypoint(self):
+        script = ROOT / "scripts" / "rehearse_cutover.py"
+        content = script.read_text(encoding="utf-8")
+
+        self.assertIn("def rehearse_cutover", content)
+        self.assertIn("if __name__ == \"__main__\"", content)
+
     def test_doctor_script_and_readiness_doc_exist(self):
         script = ROOT / "scripts" / "doctor.py"
         docs = ROOT / "docs" / "sota-feature-readiness.md"
@@ -119,6 +131,7 @@ class ProjectArtifactTests(unittest.TestCase):
         self.assertIn("ReadinessReporter", script_content)
         self.assertIn("/readiness/scorecard", docs_content)
         self.assertIn("/events/intake", docs_content)
+        self.assertIn("/cutover/rehearse", docs_content)
 
     def test_lab_in_a_box_demo_succeeds(self):
         result = subprocess.run(

@@ -8,6 +8,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from cloud_agent_service.cloud_dispatch import EcsDispatchPlanner
+from cloud_agent_service.cutover import CutoverRehearsal
 from cloud_agent_service.database import PostgresConnection, production_database_status
 from cloud_agent_service.dataset_export import SlmDatasetExporter
 from cloud_agent_service.event_ingest import EventIngestor
@@ -480,9 +481,66 @@ class CloudAgentServiceFlowTests(unittest.TestCase):
             self.assertEqual("sota-readiness.v1", report["schema_version"])
             self.assertIn("event-intake", capability_ids)
             self.assertIn("operator-doctor", capability_ids)
+            self.assertIn("cutover-rehearsal", capability_ids)
             self.assertIn("tenant-isolation", capability_ids)
             self.assertGreater(report["readiness_score"], 0)
             self.assertLessEqual(report["readiness_score"], 1)
+
+    def test_cutover_rehearsal_proves_signed_contracts_without_live_calls(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = self._build_repo(root)
+            flow = self._build_flow(root)
+
+            report = CutoverRehearsal(flow, EcsDispatchPlanner()).rehearse(
+                repo_path=str(repo),
+                status_callback_url="https://api.example.com/jobs",
+            )
+
+            checks = {check["check_id"]: check for check in report["checks"]}
+            env = {
+                entry["name"]: entry["value"]
+                for entry in report["proofs"]["ecs_dry_run"]["run_task_request"]["overrides"][
+                    "containerOverrides"
+                ][0]["environment"]
+            }
+
+            self.assertEqual("cutover-rehearsal.v1", report["schema_version"])
+            self.assertTrue(report["ok"])
+            self.assertFalse(report["live_external_calls_made"])
+            self.assertEqual(
+                "blocked_for_production",
+                report["cutover_decision"]["status"],
+            )
+            self.assertIn("ecs-submit", report["readiness"]["critical_blockers"])
+            self.assertTrue(checks["worker-callback-hmac"]["ok"])
+            self.assertTrue(checks["event-intake-hmac"]["ok"])
+            self.assertTrue(checks["ecs-dry-run-redacted"]["ok"])
+            self.assertEqual(
+                "<redacted>",
+                report["proofs"]["worker_payload"]["callback_auth"]["token"],
+            )
+            self.assertEqual("<redacted>", env["AGENT_CLOUD_WORKER_CALLBACK_TOKEN"])
+            self.assertEqual(
+                "<redacted>",
+                report["proofs"]["ecs_dry_run"]["worker_payload"]["callback_auth"]["token"],
+            )
+            self.assertIn(
+                "cutover_rehearsal_created",
+                [event["event_type"] for event in flow.store.list_events(report["job_id"])],
+            )
+
+    def test_cutover_status_exposes_operator_next_steps(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            flow = self._build_flow(Path(tmp))
+
+            status = CutoverRehearsal(flow, EcsDispatchPlanner()).status()
+
+            self.assertEqual("cutover-status.v1", status["schema_version"])
+            self.assertFalse(status["production_ready"])
+            self.assertIn("POST /cutover/rehearse", status["rehearsal"]["endpoint"])
+            self.assertIn("ecs-submit", status["critical_blockers"])
+            self.assertIn("configure ECS env", status["operator_next_steps"])
 
     def test_router_recommend_and_auto_select_policy(self):
         with tempfile.TemporaryDirectory() as tmp:

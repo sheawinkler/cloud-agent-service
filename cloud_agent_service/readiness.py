@@ -323,6 +323,15 @@ class ReadinessReporter:
                 critical=True,
             ),
             self._cap(
+                "cutover-rehearsal",
+                "production cutover rehearsal",
+                "operations",
+                "prove signed callbacks, signed event intake, ECS dry-run shape, and blockers",
+                "ready",
+                ["/cutover/status", "/cutover/rehearse", "scripts/rehearse_cutover.py"],
+                critical=True,
+            ),
+            self._cap(
                 "operator-doctor",
                 "operator doctor and readiness scorecard",
                 "operations",

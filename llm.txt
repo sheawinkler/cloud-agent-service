@@ -24,7 +24,9 @@ worker leases, forge-provider status, Vercel preview deployment,
 execution-provider status, and provenance manifests are now provider-layer
 contracts around that loop.
 Readiness scorecards, a local doctor CLI, and signed/idempotent event intake
-make production cutover gaps and webhook-triggered jobs explicit.
+make production cutover gaps and webhook-triggered jobs explicit. A cutover
+rehearsal proves signed callbacks, signed event intake, and redacted ECS dry-run
+plans locally without live cloud calls.
 
 Important boundary:
 The current implementation calls AWS only through `/jobs/<job_id>/cloud-dispatch`
@@ -54,6 +56,8 @@ Vercel Sandbox is an execution-provider status contract until a live adapter is
 implemented and verified.
 Event intake is unsigned local mode unless AGENT_CLOUD_EVENT_INGEST_SECRET is
 configured and incoming requests include a valid x-agent-cloud-event-signature.
+Cutover rehearsal endpoints/scripts are local proof only; they do not submit
+ECS tasks, push Git branches, deploy, or clear readiness blockers.
 
 Mirendil framing:
 Treat each repo update as a minimal model lab run: ModelSpec + AgentSpec +
@@ -69,6 +73,7 @@ Primary files:
 - callback_auth.py: worker callback HMAC token contract.
 - event_ingest.py: signed/idempotent webhook and event intake contract.
 - readiness.py: feature readiness scorecard and production cutover blockers.
+- cutover.py: deterministic cutover rehearsal proof.
 - forge.py: generic Git and provider-native review capability contracts.
 - lab_warehouse.py: DuckDB materialized lab read model.
 - orchestrator.py: local queue and runner.
@@ -98,6 +103,7 @@ Primary files:
 - scripts/evaluate_mvp.py: single golden task evaluator.
 - scripts/evaluate_task_suite.py: multi-run lab evaluator.
 - scripts/doctor.py: local readiness/cutover scorecard.
+- scripts/rehearse_cutover.py: no-cloud production cutover rehearsal.
 - scripts/install_allowed_modules.sh: dependency allowlist installer.
 - docs/sota-feature-readiness.md: comprehensive feature-readiness map.
 - tests/test_cloud_agent_service_flow.py: deterministic flow tests.
@@ -108,6 +114,7 @@ Run commands:
 - python3 scripts/evaluate_mvp.py
 - python3 scripts/evaluate_task_suite.py
 - python3 scripts/doctor.py --json
+- python3 scripts/rehearse_cutover.py
 - python3 -m unittest tests.test_cloud_agent_service_flow
 - python3 -m unittest discover -s tests
 - docker --context orbstack compose -f compose.yaml up -d --build api
@@ -135,6 +142,8 @@ Monitor commands:
 - curl -sS http://127.0.0.1:8000/integrations/events/status
 - curl -sS http://127.0.0.1:8000/readiness/scorecard
 - curl -sS http://127.0.0.1:8000/readiness/features
+- curl -sS http://127.0.0.1:8000/cutover/status
+- curl -sS -X POST http://127.0.0.1:8000/cutover/rehearse -H 'content-type: application/json' -d '{"repo_path":"/host_repo"}'
 - curl -sS http://127.0.0.1:8000/events/intakes
 - curl -sS http://127.0.0.1:8000/integrations/database/status
 - curl -sS http://127.0.0.1:8000/integrations/live/status
@@ -162,6 +171,7 @@ Expected successful flow:
     posts them.
 16. Record deployment/execution provider evidence and a provenance manifest.
 17. Report readiness and accept signed/idempotent event intake when configured.
+18. Rehearse cutover locally without live cloud calls.
 
 Do not:
 - Treat mock PR URLs as real GitHub PRs.
@@ -178,6 +188,7 @@ Do not:
 - Treat event intake as public/signed without AGENT_CLOUD_EVENT_INGEST_SECRET
   and a valid x-agent-cloud-event-signature.
 - Treat Vercel preview/Sandbox contracts as live without env flags and evidence.
+- Treat cutover rehearsal success as production readiness.
 - Commit runtime SQLite databases, generated workspaces, or artifacts.
 - Add package dependencies without updating the allowlist and tests.
 - Log or persist secrets.

@@ -13,6 +13,7 @@ from pydantic import BaseModel, Field
 
 from cloud_agent_service.callback_auth import CALLBACK_TOKEN_HEADER
 from cloud_agent_service.cloud_dispatch import EcsDispatchPlanner
+from cloud_agent_service.cutover import DEFAULT_CUTOVER_PROMPT, CutoverRehearsal
 from cloud_agent_service.event_ingest import EVENT_SIGNATURE_HEADER, EventIngestor
 from cloud_agent_service.lab_warehouse import LabWarehouse
 from cloud_agent_service.models import (
@@ -87,6 +88,13 @@ class RouterRecommendPayload(BaseModel):
     harness_id: str = "local-template"
     deploy_policy: DeploymentPolicy = DeploymentPolicy.MANUAL
     routing_policy: RoutingPolicy = RoutingPolicy.RECOMMEND_ONLY
+
+
+class CutoverRehearsalPayload(BaseModel):
+    repo_path: str = Field(min_length=1)
+    prompt: str = DEFAULT_CUTOVER_PROMPT
+    user_id: str = "cutover-rehearsal-user"
+    status_callback_url: str | None = None
 
 
 class WorkerCallbackPayload(BaseModel):
@@ -268,6 +276,32 @@ def readiness_features() -> dict[str, Any]:
         "features": reporter.feature_list(capabilities),
         "capabilities": [capability.__dict__ for capability in capabilities],
     }
+
+
+@app.get("/cutover/status")
+def cutover_status() -> dict[str, Any]:
+    return CutoverRehearsal(
+        flow,
+        ecs_dispatch_planner,
+        event_ingestor=event_ingestor,
+    ).status()
+
+
+@app.post("/cutover/rehearse")
+def rehearse_cutover(payload: CutoverRehearsalPayload) -> dict[str, Any]:
+    try:
+        return CutoverRehearsal(
+            flow,
+            ecs_dispatch_planner,
+            event_ingestor=event_ingestor,
+        ).rehearse(
+            repo_path=payload.repo_path,
+            prompt=payload.prompt,
+            user_id=payload.user_id,
+            status_callback_url=payload.status_callback_url or _worker_callback_base(),
+        )
+    except RequestValidationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @app.get("/models")
@@ -1042,6 +1076,10 @@ def _lab_dashboard_html() -> str:
         <pre id="readiness"></pre>
       </div>
       <div class="panel">
+        <h2>Cutover Rehearsal</h2>
+        <pre id="cutover"></pre>
+      </div>
+      <div class="panel">
         <h2>Event Intake</h2>
         <pre id="eventsIntake"></pre>
       </div>
@@ -1154,6 +1192,7 @@ def _lab_dashboard_html() -> str:
         models,
         appliance,
         readiness,
+        cutover,
         eventIntakes,
         deployment,
         execution,
@@ -1170,6 +1209,7 @@ def _lab_dashboard_html() -> str:
         fetch('/models').then((response) => response.json()),
         fetch('/lab/appliance/status').then((response) => response.json()),
         fetch('/readiness/scorecard').then((response) => response.json()),
+        fetch('/cutover/status').then((response) => response.json()),
         fetch('/events/intakes?limit=5').then((response) => response.json()),
         fetch('/integrations/deploy/status').then((response) => response.json()),
         fetch('/integrations/execution/status').then((response) => response.json()),
@@ -1202,6 +1242,7 @@ def _lab_dashboard_html() -> str:
         counts: readiness.status_counts,
         critical_blockers: readiness.critical_blockers
       }, null, 2);
+      document.getElementById('cutover').textContent = JSON.stringify(cutover, null, 2);
       document.getElementById('eventsIntake').textContent = JSON.stringify(eventIntakes, null, 2);
       document.getElementById('deployment').textContent = JSON.stringify(deployment, null, 2);
       document.getElementById('execution').textContent = JSON.stringify(execution, null, 2);
